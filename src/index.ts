@@ -1,56 +1,17 @@
-// Plugin entry. Registers the `workflow` tool via the verified SDK surface.
-// See docs/superpowers/plans/api-findings.md for the exact contracts proven
-// against the installed openclaw package.
-import { Type } from "typebox";
+// Plugin entry. Registers the real runtime-backed `workflow` tool via the
+// verified SDK surface. See docs/superpowers/plans/api-findings.md for the exact
+// contracts proven against the installed openclaw package.
+//
+// We keep the `defineToolPlugin` path (api-findings.md §2 — it auto-derives the
+// `contracts.tools` manifest and is the path the isolated 2026.6.1 dev gateway
+// actually loaded, §8). The tool definition itself lives in workflow-tool.ts and
+// is fed through this plugin's `tools: (tool) => [tool(...)]` factory.
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
-import { spawnAwaitCollect } from "./skeleton/spawn-bridge.js";
+import { createWorkflowTool } from "./workflow-tool.js";
 
 export default defineToolPlugin({
   id: "workflows",
   name: "Dynamic Workflows",
   description: "Claude-Code-style dynamic workflows: orchestrate many sub-agents from an LLM-written script.",
-  tools: (tool) => [
-    tool({
-      name: "workflow",
-      label: "Dynamic Workflow",
-      description: "Run a dynamic workflow (skeleton: spawns one sub-agent and returns its output).",
-      parameters: Type.Object({
-        task: Type.String({ description: "Task for the spawned sub-agent." }),
-      }),
-      execute: async (params, _config, context) => {
-        const { task } = params;
-        const sessionKey = `agent:main:subagent:workflow-${context.toolCallId}`;
-
-        context.onUpdate?.({
-          content: [],
-          details: undefined,
-          progress: {
-            text: "spawning 1 sub-agent",
-            visibility: "channel",
-            privacy: "public",
-            id: "wf:spawn",
-          },
-        });
-
-        const { status, output } = await spawnAwaitCollect(
-          context.api.runtime.subagent,
-          sessionKey,
-          task,
-        );
-
-        context.onUpdate?.({
-          content: [],
-          details: undefined,
-          progress: {
-            text: `child ${status}`,
-            visibility: "channel",
-            privacy: "public",
-            id: "wf:done",
-          },
-        });
-
-        return output;
-      },
-    }),
-  ],
+  tools: (tool) => [tool(createWorkflowTool())],
 });
