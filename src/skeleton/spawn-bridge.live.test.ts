@@ -11,17 +11,28 @@ import { spawnAwaitCollect, type SubagentRuntime } from "./spawn-bridge.js";
 
 const live = process.env.OPENCLAW_LIVE_TEST === "1";
 const url = process.env.OPENCLAW_GATEWAY_URL ?? "ws://127.0.0.1:18789";
+// 2026.6.1 refuses implicit config credentials when the gateway URL is
+// overridden (ensureExplicitGatewayAuth). Pass the token explicitly so the
+// "cli" url-override path is allowed.
+const token = process.env.OPENCLAW_GATEWAY_TOKEN || undefined;
 
 // Map the narrow SubagentRuntime surface onto real gateway RPCs so the exact
 // spawn-bridge code path is exercised against the live gateway.
 function gatewaySubagentRuntime(): SubagentRuntime {
-  const opts = { url, json: true };
+  const opts = { url, token, json: true };
   return {
     run: async (params) => {
       const res = await callGatewayFromCli(
         "agent",
         opts,
-        { lane: "subagent", message: params.message, deliver: params.deliver ?? false },
+        {
+          lane: "subagent",
+          message: params.message,
+          deliver: params.deliver ?? false,
+          sessionKey: params.sessionKey,
+          // 2026.6.1 AgentParamsSchema requires idempotencyKey (NonEmptyString).
+          idempotencyKey: `wf-live:${params.sessionKey}:${Date.now()}`,
+        },
         { clientName: "cli", expectFinal: true },
       );
       return res as unknown as { runId: string };

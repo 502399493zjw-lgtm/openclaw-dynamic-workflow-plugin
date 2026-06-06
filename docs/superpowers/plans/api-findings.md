@@ -119,6 +119,42 @@ are from the newer source CLI, not this installed build. Gateway restart is `ope
 ## 7. Verdict
 
 - Build/typecheck spine: **GREEN** against `openclaw@2026.6.1` (types resolve, signatures verified).
-- Live gateway load + live PONG test: **BLOCKED** by the gateway running `2026.1.30`, whose dist
-  lacks the plugin-SDK entry modules and the `inspect`/`--link` CLI surface. See blockers[].
+- Live load + spine: **PROVEN on an isolated 2026.6.1 dev gateway** (see §8). The plugin loads and the
+  `workflow` tool registers on a real 2026.6.1 gateway; the spawn→await→collect spine executes end-to-end
+  up to the real LLM call. Only the final PONG is blocked by a stale/placeholder model credential (external).
+- The user's *production* gateway runs `2026.1.30` (StepFun-managed, end-user build) which cannot host
+  plugins; do not target it. Live work uses the isolated 2026.6.1 dev gateway.
+
+## 8. Live verification on an isolated 2026.6.1 dev gateway (2026-06-06)
+
+Stood up `openclaw@2026.6.1` (from our `node_modules`) under an isolated `OPENCLAW_HOME`
+(`.devgateway/home`) on **port 18790**, with a downloaded `node-v22.19.0` (2026.6.1 refuses Node 22.18).
+Production gateway (:18789, `~/.openclaw`, the LaunchAgent, `~/.stepfun`) was never touched. Results:
+
+- **Config migration to 2026.6.1 — verified delta:** `ModelsConfigSchema` (`src/config/zod-schema.core.ts`)
+  is `.strict()` and permits only `{mode, providers, pricing}`. The ONLY rejection was
+  `models: Unrecognized key: "bedrockDiscovery"`. **Fix = delete `models.bedrockDiscovery`** (it moved to its
+  own config surface). The custom `moonshot` provider block needed NO change because `moonshot` is a
+  **built-in overlay id** (`BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS`) — only truly-custom provider ids must
+  declare `baseUrl`+`models`. Also: port→18790, removed `channels.feishu` + its plugin entries, repointed
+  `agents.defaults.workspace` into the isolated home. → `openclaw config validate` = `Config valid`.
+- **Plugin loads on 2026.6.1:** `openclaw plugins inspect workflows` → `Status: loaded` (enabled, no
+  diagnostics). The `workflow` tool is confirmed present via the model-free `tools.catalog` RPC
+  (`{includePlugins:true}`) — 1 of 42 tools. (`plugins inspect --json` reports `tools: []`, but that is a
+  known metadata limitation — the bundled `memory-core` plugin reports the same.)
+- **Spine executes end-to-end:** the `workflow` skeleton spawned a real sub-agent, awaited it in code, and
+  routed to `moonshot/kimi-k2.5` — reaching the real LLM HTTP call. Two 2026.6.1 client-contract deltas were
+  needed and are now in the live test:
+  - `callGatewayFromCli` with a URL override requires an **explicit token** (`ensureExplicitGatewayAuth`);
+    pass `OPENCLAW_GATEWAY_TOKEN`.
+  - `AgentParamsSchema` (`packages/gateway-protocol/src/schema/agent.ts`) now requires
+    **`idempotencyKey: NonEmptyString`** (`additionalProperties:false`).
+- **Only blocker (external, not our bug):** `moonshot` API returned **HTTP 401 Invalid Authentication**
+  (verified by raw `curl` to `https://api.moonshot.cn/v1`, 3/3). The key stored in `~/.openclaw/openclaw.json`
+  (`sk-`+34 chars) appears stale/placeholder — the StepFun-managed prod gateway likely injects a different
+  live credential at runtime. A working model key is required to get the final PONG; the rails (correctly)
+  forbid touching StepFun's runtime injection.
+
+**Bottom line:** everything under our control is green — plugin loads + spine runs end-to-end on a real
+2026.6.1 gateway. The live PONG needs a valid model credential, which only the user can supply.
 </content>
