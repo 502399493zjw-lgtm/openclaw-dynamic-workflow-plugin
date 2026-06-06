@@ -369,4 +369,203 @@ is hard-gated to `origin==="bundled" || trustedOfficialInstall===true` (`registr
 throw for our externally-installed plugin in 2026.6.1 — so the resume journal must ride on managedFlow
 `stateJson`/`waitJson` (not trust-gated) or a dedicated plugin-owned SQLite schema, never `openKeyedStore`
 and never a JSON sidecar. Net: 2 GREEN, 2 GREEN-with-workaround, 1 needs-the-managedFlows-substitute.
-</content>
+
+## 10. Plan #3 managedFlows signatures (EXACT — pinned from real source + 2026.6.1 d.ts)
+
+All signatures below were read from `~/projects/openclaw` source and re-confirmed byte-for-byte in
+`node_modules/openclaw/dist/types-DOrS-soN.d.ts` (the package our build resolves). Source `file:line`
+cited first; d.ts line second.
+
+### 10.1 `api.runtime.tasks.managedFlows` shape
+
+**Access path.** `api.runtime` is a `PluginRuntime` (`PluginRuntimeCore & {...}`); `PluginRuntimeCore`
+carries `tasks: { runs, flows, managedFlows, flow }`. So `managedFlows` is reached as
+`api.runtime.tasks.managedFlows` (d.ts:2680-2685, the `tasks: {...}` block inside `PluginRuntimeCore`).
+`PluginRuntimeTasks` itself is assembled by `createRuntimeTasks({ legacyTaskFlow })` where both
+`managedFlows` and `flow` alias the same `legacyTaskFlow` value (`runtime-tasks.ts:215-224`).
+
+`managedFlows: PluginRuntimeTaskFlow` — **type marked `/** @deprecated Use runtime.tasks.flows for
+DTO-based TaskFlow access. */`** but it is the ONLY surface exposing write/mutate (create/setWaiting/
+resume/finish/fail). `runtime.tasks.flows` (`PluginRuntimeTaskFlows`) is read-only DTO access
+(`get`/`list`/`findLatest`/`resolve`/`getTaskSummary`) — it has NO create or mutate. So for Plan #3
+durable resume-journal state, `managedFlows` is mandatory despite the deprecation note.
+
+**`PluginRuntimeTaskFlow`** (`runtime-taskflow.types.ts:141-149` / d.ts:1936-1942) — the entry seam:
+```
+type PluginRuntimeTaskFlow = {
+  bindSession: (params: { sessionKey: string; requesterOrigin?: TaskDeliveryState["requesterOrigin"] }) => BoundTaskFlowRuntime;
+  fromToolContext: (ctx: Pick<OpenClawPluginToolContext, "sessionKey" | "deliveryContext">) => BoundTaskFlowRuntime;
+};
+```
+From inside a tool, call `api.runtime.tasks.managedFlows.fromToolContext(ctx)` (ctx = the
+`OpenClawPluginToolContext`, needs `.sessionKey` + `.deliveryContext`) to get the session-bound runtime.
+`bindSession({ sessionKey })` is the non-tool variant. Bound runtime asserts a non-empty sessionKey or
+throws "TaskFlow runtime requires a bound sessionKey." (`runtime-tasks.ts:124-127`).
+
+**Create a flow.** `BoundTaskFlowRuntime.createManaged` / `tryCreateManaged`
+(`runtime-taskflow.types.ts:74-75` / d.ts:1867-1868):
+```
+createManaged:    (params: ManagedTaskFlowCreateParams) => ManagedTaskFlowRecord;        // throws on collision
+tryCreateManaged: (params: ManagedTaskFlowCreateParams) => ManagedTaskFlowRecord | null; // null on collision
+```
+`ManagedTaskFlowCreateParams` (`runtime-taskflow.types.ts:36-48` / d.ts:1834-1846):
+```
+{ controllerId: string; goal: string; status?; notifyPolicy?: TaskNotifyPolicy;
+  currentStep?: string | null; stateJson?: JsonValue | null; waitJson?: JsonValue | null;
+  cancelRequestedAt?: number | null; createdAt?; updatedAt?; endedAt?: number | null }
+```
+`controllerId` is the plugin's stable id for the flow controller; `goal` is required free text.
+`stateJson`/`waitJson` are the durable JSON slots (our resume journal lives here — `JsonValue` from
+`task-flow-registry.types.ts:6-12`: null|bool|number|string|array|object).
+
+**Owner/flowId model.** Returned `ManagedTaskFlowRecord = TaskFlowRecord & { syncMode:"managed"; controllerId:string }`
+(`runtime-taskflow.types.ts:14-17`). `TaskFlowRecord` (`task-flow-registry.types.ts:61-80`) has:
+`flowId` (host-assigned id), `ownerKey` (= the bound sessionKey — owner scoping is by sessionKey, NOT
+by plugin), `controllerId?`, `revision: number` (optimistic-concurrency counter), `status: TaskFlowStatus`
+("queued"|"running"|"waiting"|"blocked"|"succeeded"|"failed"|"cancelled"|"lost"), `goal`, `currentStep?`,
+`stateJson?`, `waitJson?`, `blockedTaskId?`, `createdAt`/`updatedAt`/`endedAt?`. Every flow is keyed by
+`flowId` and access is owner-scoped: all reads go through `*ForOwner(callerOwnerKey: sessionKey)`
+(`runtime-tasks.ts:131-176`) — a plugin can only see flows owned by the session it bound to.
+
+**Read by id / write stateJson.** Reads on the bound runtime return raw `TaskFlowRecord`:
+`get(flowId)`, `list()`, `findLatest()`, `resolve(token)`, `getTaskSummary(flowId)`
+(`runtime-taskflow.types.ts:76-80`). To **write `stateJson`** you must use a revision-checked mutator —
+there is no bare setter. The mutators (`runtime-taskflow.types.ts:81-119` / d.ts:1874-1911) all take
+`{ flowId, expectedRevision, ...slots, updatedAt? }` and return `ManagedTaskFlowMutationResult`:
+```
+setWaiting({ flowId, expectedRevision, currentStep?, stateJson?, waitJson?, blockedTaskId?, blockedSummary?, updatedAt? })
+resume    ({ flowId, expectedRevision, status?: "queued"|"running", currentStep?, stateJson?, updatedAt? })
+finish    ({ flowId, expectedRevision, stateJson?, updatedAt?, endedAt? })
+fail      ({ flowId, expectedRevision, stateJson?, blockedTaskId?, blockedSummary?, updatedAt?, endedAt? })
+requestCancel({ flowId, expectedRevision, cancelRequestedAt? })
+cancel    ({ flowId, cfg: OpenClawConfig }) => Promise<BoundTaskFlowCancelResult>   // async; needs cfg
+runTask   ({ flowId, runtime: TaskRuntime, task: string, ... }) => BoundTaskFlowTaskRunResult
+```
+`ManagedTaskFlowMutationResult` (`runtime-taskflow.types.ts:25-34` / d.ts:1826-1833) is a discriminated
+union: `{ applied:true; flow:ManagedTaskFlowRecord }` OR `{ applied:false; code: ManagedTaskFlowMutationErrorCode; current?: TaskFlowRecord }`
+where `code = "not_found"|"not_managed"|"revision_conflict"|"persist_failed"`. **Pattern for Plan #3
+resume-journal write:** read flow → take `flow.revision` → call `setWaiting/resume` with
+`expectedRevision = flow.revision` and the new `stateJson`; on `applied:false code:"revision_conflict"`,
+re-read `current` and retry. This is the optimistic-concurrency write loop; there is no last-writer-wins
+setter.
+
+### 10.2 `api.session.workflow.scheduleSessionTurn` (the deferred wakeup)
+
+`api.session.workflow` is `OpenClawPluginSessionWorkflowApi` (`types.ts:2528-2556`). Signature
+(`types.ts:2549-2551` / d.ts:6777):
+```
+scheduleSessionTurn: (params: PluginSessionTurnScheduleParams) => Promise<PluginSessionSchedulerJobHandle | undefined>;
+```
+(Flat `api.scheduleSessionTurn` at `types.ts:2852` is the **@deprecated** alias; use the
+`api.session.workflow.*` form.)
+
+**Exact params** — `PluginSessionTurnScheduleParams` is a 3-arm union over a common base
+(`host-hooks.ts:261-289` / d.ts:4517-4540):
+```
+common: { sessionKey: string; message: string; agentId?: string;
+          deliveryMode?: "none" | "announce"; name?: string; tag?: string }
+arm A:  { at: string|number|Date; deleteAfterRun?: boolean } & common
+arm B:  { delayMs: number;        deleteAfterRun?: boolean } & common
+arm C:  { cron: string; tz?: string; deleteAfterRun?: false } & common   // recurring cannot deleteAfterRun=true
+```
+`tag` is the cleanup key used by `unscheduleSessionTurnsByTag` (reserved cron delimiters like `:` are
+rejected). For a one-shot resume wakeup use arm A (`at`) or arm B (`delayMs`) with `deleteAfterRun:true`.
+
+**What a woken turn delivers.** `scheduleSessionTurn` does NOT run code — it hands timing to Cron. The
+impl `schedulePluginSessionTurn` (`host-hook-scheduled-turns.ts:277-296`) creates a Cron job with
+`payload: { kind: "agentTurn", message }`, `sessionTarget: \`session:${sessionKey}\``, `wakeMode: "now"`,
+`delivery: { mode: deliveryMode ?? "announce" }`, and `deleteAfterRun: params.schedule.deleteAfterRun ?? (kind==="at")`.
+So when the timer fires, Cron **submits `message` as a fresh agent turn in that session** (i.e. the agent
+wakes and processes `message` as if it were an inbound prompt). `deliveryMode:"none"` runs the turn
+silently (no channel announce); `"announce"` posts to the last channel. There is no callback/handler —
+the resume signal IS the message text injected into the session turn. **HARD GATE:** the impl early-returns
+`{ removed:0 }` / no-ops unless `params.origin === "bundled"` (`host-hook-scheduled-turns.ts:362`,
+and the schedule path is bundled-only too) — same trust gate as `openKeyedStore`. For our externally
+installed plugin in 2026.6.1 this will silently return `undefined`. Plan #3 must treat the handle as
+best-effort and fall back to a managedFlow `waiting` status the agent polls, OR rely on the standard
+"completion event wakes the requester" path rather than a self-scheduled turn.
+
+**Return.** `PluginSessionSchedulerJobHandle` (`host-hooks.ts:213-218` / d.ts:4474-4479):
+`{ id: string; pluginId: string; sessionKey: string; kind: string }` — or `undefined` when scheduling
+was rejected/unavailable. Companion: `unscheduleSessionTurnsByTag(params: { sessionKey; tag }) =>
+Promise<{ removed: number; failed: number }>` (`host-hooks.ts:291-299`, `types.ts:2553-2555`).
+
+### 10.3 "Background started" tool-return convention
+
+Confirmed canonical shape (`media-generate-background-shared.ts:328-355`,
+`session-async-task-status.ts:65-79`, also `extensions/codex/.../dynamic-tool-execution.ts:228-234`):
+a tool that kicks off async work returns
+```
+{ content: [{ type: "text", text: "Background task started ... do not call again; wait for completion." }],
+  details: { async: true, status: "started", taskId, runId, task: { taskId, runId } } }
+```
+`details.async: true` + `details.status: "started"` is the discriminator the host uses to know the tool
+deferred its real result; `taskId` (and `runId`) point the host/agent at the live task so completion can
+be correlated and so a duplicate re-invocation can be short-circuited (the "existingTask" variant returns
+`details: { async:true, active:true, existingTask:true, status, task:{taskId,runId} }`). For Plan #3 the
+`workflow` tool returns exactly this with our managedFlow id surfaced as `taskId` (and the bound task's
+`runId` if a `runTask` child exists).
+
+### 10.4 `before_tool_call` hook arg/return type names + `api.on`
+
+Hook is in `PluginHookHandlerMap` (`hook-types.ts:1086-1089`):
+```
+before_tool_call: (event: PluginHookBeforeToolCallEvent, ctx: PluginHookToolContext)
+  => Promise<PluginHookBeforeToolCallResult | void> | PluginHookBeforeToolCallResult | void;
+```
+- **Event** `PluginHookBeforeToolCallEvent` (`hook-types.ts:518-539`):
+  `{ toolName: string; params: Record<string,unknown>; toolKind?; toolInputKind?; runId?; toolCallId?; derivedPaths?: readonly string[] }`.
+- **Context** `PluginHookToolContext` (`hook-types.ts:502-516`):
+  `{ agentId?; sessionKey?; sessionId?; runId?; trace?; toolName; toolKind?; toolInputKind?; toolCallId?; getSessionExtension?; channelId? }`.
+- **Result** `PluginHookBeforeToolCallResult` (`hook-types.ts:552-566`):
+  `{ params?: Record<string,unknown>; block?: boolean; blockReason?: string; requireApproval?: { title; description; severity?; timeoutMs?; timeoutBehavior?: "allow"|"deny"; allowedDecisions?: Array<"allow-once"|"allow-always"|"deny">; pluginId?; onResolution?: (decision: PluginApprovalResolution) => Promise<void>|void } }`.
+  `PluginApprovalResolution = "allow-once"|"allow-always"|"deny"|"timeout"|"cancelled"`
+  (`PluginApprovalResolutions` const, `hook-types.ts:541-550`). Returning `requireApproval` is the true
+  blocking gate; returning `block:true` hard-rejects. For Plan #3 approval, key on
+  `event.toolName === "workflow"` + the destructive phase encoded in `event.params`.
+
+- **`api.on` IS on the plugin register API.** `OpenClawPluginApi.on` (`types.ts:2908-2912` / d.ts:7039):
+  ```
+  on: <K extends PluginHookName>(hookName: K, handler: PluginHookHandlerMap[K],
+       opts?: { priority?: number; timeoutMs?: number }) => void;
+  ```
+  Generic over `PluginHookName` so the handler is type-checked against `PluginHookHandlerMap[K]`.
+  `"before_tool_call"` is a valid `PluginHookName` (`hook-types.ts:89`, in `PLUGIN_HOOK_NAMES` at :136).
+  (`api.registerHook(events, handler, opts)` at `types.ts:2630-2634` is the untyped multi-event variant;
+  prefer `api.on` for a single typed hook.)
+
+### 10.5 `api.runtime.nodes.invoke` + resolving a paired Canvas nodeId
+
+**Signature.** `api.runtime.nodes` (`types.ts:90-93` / d.ts:4861-4864):
+```
+nodes: {
+  list:   (params?: RuntimeNodeListParams) => Promise<RuntimeNodeListResult>;
+  invoke: (params: RuntimeNodeInvokeParams) => Promise<unknown>;
+};
+```
+`RuntimeNodeInvokeParams` (`types.ts:70-76` / d.ts:4845-4851):
+```
+{ nodeId: string; command: string; params?: unknown; timeoutMs?: number; idempotencyKey?: string }
+```
+Returns `Promise<unknown>` — the raw transport envelope; callers must unwrap (real-world canvas/browser
+results come back as `{ payloadJSON }` or `{ payload }` needing a parse — see unwrap pattern below).
+
+**Resolving a paired node** — canonical pattern from `extensions/google-meet/src/transports/chrome-browser-proxy.ts:84-148`
+(applies 1:1 to Canvas; swap the cap/command names):
+1. `runtime.nodes.list({ connected: true })` → `RuntimeNodeListResult` =
+   `{ nodes: Array<{ nodeId; displayName?; remoteIp?; connected?; caps?: string[]; commands?: string[] }> }`
+   (`types.ts:55-68`).
+2. Filter for the capability: a node is usable when `node.connected === true` AND its `commands`/`caps`
+   advertise the feature. google-meet checks `commands.includes("googlemeet.chrome") && (commands.includes("browser.proxy") || caps.includes("browser"))`
+   (`chrome-browser-proxy.ts:49-57`). **For Canvas, filter on the canvas command/cap the canvas plugin
+   advertises** (e.g. a `canvas.*` command / `browser` or `canvas` cap — confirm against the installed
+   canvas node's advertised `commands` at runtime via `nodes.list`, do not hardcode).
+3. Disambiguate: 0 matches → throw "no connected canvas node, run `openclaw node run` + approve pairing";
+   exactly 1 → use its `nodeId`; >1 → require an explicit configured node id (match by
+   `nodeId | displayName | remoteIp`, `chrome-browser-proxy.ts:59-61`).
+4. `runtime.nodes.invoke({ nodeId, command: "<canvas command>", params: {...}, timeoutMs })`
+   (`chrome-browser-proxy.ts:185-196`), then unwrap `payloadJSON`/`payload` from the `unknown` result
+   (`chrome-browser-proxy.ts:150-165`).
+
+There is no dedicated "get my paired node" helper — pairing is discovered by listing connected nodes and
+matching advertised caps/commands, exactly as §9.3 (canvas A2UI) assumed.

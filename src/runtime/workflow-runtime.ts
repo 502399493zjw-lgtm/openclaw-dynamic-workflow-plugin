@@ -11,6 +11,19 @@ export type WorkflowEvent =
   | { type: "agent:done"; phase: string; label: string; seq: number; status: string }
   | { type: "log"; phase: string; message: string };
 
+/**
+ * Resume journal (Plan #3 Task 3.5): an optional store keyed by a stable
+ * `{callSite, prompt}` cache key (Plan #1 `agentCacheKey`, applied inside
+ * `createResumeJournal`). On a re-run, an `agent()` call whose key is already
+ * present returns the cached output WITHOUT spawning a sub-agent; only missing
+ * agents re-spawn. `get` returns `undefined` on a miss. The engine treats the
+ * journal as best-effort — any failure inside it must not abort the run.
+ */
+export type ResumeJournal = {
+  get: (k: { callSite: string; prompt: string }) => Promise<unknown>;
+  put: (k: { callSite: string; prompt: string }, value: unknown) => Promise<void>;
+};
+
 export type RunWorkflowOpts = {
   script: string;
   args?: unknown;
@@ -22,6 +35,9 @@ export type RunWorkflowOpts = {
   onEvent?: (e: WorkflowEvent) => void;
   // Wires `schema` (opaque to the engine) to a text validator; the tool injects a TypeBox-backed factory.
   schemaValidatorFactory?: (schema: unknown) => Validator<unknown>;
+  // Optional resume journal (Plan #3 §3.5). When present, `agent()` checks it
+  // before spawning and records successful results into it.
+  journal?: ResumeJournal;
 };
 
 export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
@@ -43,12 +59,38 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
     const mySeq = (seq += 1);
     const myPhase = phaseName;
     const label = agentOpts?.label ?? `${myPhase}#${mySeq}`;
+    // §3.5: a resume re-run keys cached agent results by `{callSite, prompt}`.
+    const journalKey = { callSite: `${myPhase}#${mySeq}`, prompt };
     return scheduler.schedule(async () => {
+      // §3.5: cache hit → return the cached output WITHOUT spawning a sub-agent.
+      // Best-effort: any journal read failure falls through to a real spawn.
+      if (opts.journal) {
+        let cached: unknown;
+        try {
+          cached = await opts.journal.get(journalKey);
+        } catch {
+          cached = undefined;
+        }
+        if (cached !== undefined) {
+          emit({ type: "agent:start", phase: myPhase, label, seq: mySeq });
+          emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: "cached" });
+          return cached;
+        }
+      }
       emit({ type: "agent:start", phase: myPhase, label, seq: mySeq });
       const sessionKey = `${opts.baseSessionKey}:${myPhase}:${mySeq}`;
       const runOnce = async (correction?: string) => {
         const message = correction ? `${prompt}\n\n${correction}` : prompt;
         return spawnAwaitCollect(opts.subagent, sessionKey, message);
+      };
+      // §3.5: record a successful result into the journal (best-effort).
+      const record = async (value: unknown): Promise<void> => {
+        if (!opts.journal || value == null) return;
+        try {
+          await opts.journal.put(journalKey, value);
+        } catch {
+          /* journal write is best-effort; never fail the run on it */
+        }
       };
       try {
         if (agentOpts?.schema && opts.schemaValidatorFactory) {
@@ -58,12 +100,15 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
             validate,
             maxRetries: 2,
           });
+          await record(value);
           emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: value == null ? "invalid" : "ok" });
           return value;
         }
         const r = await runOnce();
+        const output = r.status === "ok" ? r.output : null;
+        await record(output);
         emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: r.status });
-        return r.status === "ok" ? r.output : null;
+        return output;
       } catch {
         emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: "error" });
         return null;

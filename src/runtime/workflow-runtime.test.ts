@@ -1,19 +1,23 @@
 import { describe, it, expect, vi } from "vitest";
 import { runWorkflow, type WorkflowEvent } from "./workflow-runtime.js";
+import { createResumeJournal } from "./resume-journal.js";
 import type { SubagentRuntime } from "../skeleton/spawn-bridge.js";
 
 // Fake subagent: echoes a per-prompt canned reply after an optional delay.
 function fakeSubagent(opts?: { reply?: (msg: string) => string; delayMs?: (msg: string) => number }): {
   rt: SubagentRuntime;
   peakConcurrency: () => number;
+  spawnCount: () => number;
 } {
   let active = 0;
   let peak = 0;
+  let spawns = 0;
   const reply = opts?.reply ?? ((m) => `reply:${m}`);
   const delay = opts?.delayMs ?? (() => 0);
   const store = new Map<string, string>();
   const rt: SubagentRuntime = {
     run: async ({ sessionKey, message }) => {
+      spawns += 1;
       active += 1; peak = Math.max(peak, active);
       await new Promise((r) => setTimeout(r, delay(message)));
       active -= 1;
@@ -25,7 +29,7 @@ function fakeSubagent(opts?: { reply?: (msg: string) => string; delayMs?: (msg: 
       messages: [{ role: "assistant", content: [{ type: "text", text: store.get(sessionKey) ?? "" }] }],
     }),
   };
-  return { rt, peakConcurrency: () => peak };
+  return { rt, peakConcurrency: () => peak, spawnCount: () => spawns };
 }
 
 type RunOpts = Parameters<typeof runWorkflow>[0];
@@ -100,5 +104,47 @@ describe("runWorkflow", () => {
     }));
     expect(events.filter((e) => e.type === "phase").map((e: any) => e.name)).toEqual(["scan", "verify"]);
     expect(events.filter((e) => e.type === "agent:done").length).toBe(2);
+  });
+
+  it("resume: a pre-populated journal makes a re-run spawn 0 sub-agents (§3.5)", async () => {
+    // Shared backing store survives across the two runs (mirrors a managedFlow
+    // stateJson slot). The journal keys by `{callSite, prompt}` via agentCacheKey.
+    const store: Record<string, unknown> = {};
+    const journalFor = () =>
+      createResumeJournal({
+        read: async () => store,
+        write: async (entries) => {
+          Object.assign(store, entries);
+        },
+        scriptHash: "h-resume",
+        args: { a: 1 },
+      });
+    const script = `phase("scan"); const a = await agent("audit A"); phase("verify"); const b = await agent("verify B"); return [a, b];`;
+
+    // First run: populates the journal; assert two real spawns occurred.
+    const first = fakeSubagent();
+    const r1 = await runWorkflow(
+      base({ script, args: { a: 1 }, subagent: first.rt, journal: journalFor() }),
+    );
+    expect(first.spawnCount()).toBe(2);
+    expect(r1).toEqual(["reply:audit A", "reply:verify B"]);
+
+    // Re-run with the populated store + a fresh counting subagent: 0 spawns,
+    // identical results returned straight from the journal.
+    const second = fakeSubagent();
+    const events: WorkflowEvent[] = [];
+    const r2 = await runWorkflow(
+      base({
+        script,
+        args: { a: 1 },
+        subagent: second.rt,
+        journal: journalFor(),
+        onEvent: (e) => events.push(e),
+      }),
+    );
+    expect(second.spawnCount()).toBe(0);
+    expect(r2).toEqual(["reply:audit A", "reply:verify B"]);
+    // Both agents resolved from cache.
+    expect(events.filter((e) => e.type === "agent:done" && (e as any).status === "cached").length).toBe(2);
   });
 });
