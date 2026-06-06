@@ -149,12 +149,19 @@ Production gateway (:18789, `~/.openclaw`, the LaunchAgent, `~/.stepfun`) was ne
     pass `OPENCLAW_GATEWAY_TOKEN`.
   - `AgentParamsSchema` (`packages/gateway-protocol/src/schema/agent.ts`) now requires
     **`idempotencyKey: NonEmptyString`** (`additionalProperties:false`).
-- **Only blocker (external, not our bug):** `moonshot` API returned **HTTP 401 Invalid Authentication**
-  (verified by raw `curl` to `https://api.moonshot.cn/v1`, 3/3). The key stored in `~/.openclaw/openclaw.json`
-  (`sk-`+34 chars) appears stale/placeholder — the StepFun-managed prod gateway likely injects a different
-  live credential at runtime. A working model key is required to get the final PONG; the rails (correctly)
-  forbid touching StepFun's runtime injection.
+- **Live PONG — ✅ PASSED.** With a valid Moonshot/Kimi key (`models.providers.moonshot`, `api.moonshot.cn/v1`),
+  the live spine test passed on **`moonshot/kimi-k2.6`** (and `kimi-k2.5`): a real sub-agent spawned, was
+  awaited in code via `agent.wait`, and returned `PONG`. One final 2026.6.1 contract delta was needed:
+  **`chat.history` requires `sessionKey`** (it rejects the older `key` param). The live-test adapter now
+  sends `{ sessionKey }`.
+- **Credential notes (transient, not design):** the original `~/.openclaw` moonshot key was stale (401 — the
+  StepFun prod gateway injects a live credential at runtime). A magic666 NewAPI key worked for auth but its
+  Claude **opus** models are quota-rate-limited (`api.magic666.top` is the real API host; `www`/bare → 403 WAF).
+  The Moonshot/Kimi key has no such limit, so it landed the PONG.
 
-**Bottom line:** everything under our control is green — plugin loads + spine runs end-to-end on a real
-2026.6.1 gateway. The live PONG needs a valid model credential, which only the user can supply.
+**Bottom line — Phase 0 spine fully proven on a real openclaw@2026.6.1 gateway:** plugin loads + the
+`workflow` tool registers + spawn→await-in-code→collect returns a real LLM `PONG`. Production gateway
+(StepFun-managed :18789) was never touched throughout. The three 2026.6.1 contract deltas (explicit
+gateway token on URL override; required `idempotencyKey`; `chat.history` uses `sessionKey`) are captured
+above for Plan #2.
 </content>

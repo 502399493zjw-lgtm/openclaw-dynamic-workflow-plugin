@@ -50,7 +50,8 @@ function gatewaySubagentRuntime(): SubagentRuntime {
       const res = await callGatewayFromCli(
         "chat.history",
         opts,
-        { key: params.sessionKey, limit: params.limit },
+        // 2026.6.1 chat.history requires `sessionKey` (rejects the older `key`).
+        { sessionKey: params.sessionKey, limit: params.limit },
         { clientName: "cli", expectFinal: true },
       );
       return res as unknown as { messages: unknown[] };
