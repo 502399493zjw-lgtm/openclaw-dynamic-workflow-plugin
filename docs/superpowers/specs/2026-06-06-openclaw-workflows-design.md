@@ -78,9 +78,11 @@ Main-session Agent (LLM)  ── recognizes workflow task → WRITES a JS orches
 
 | Need | Real primitive | Source |
 |------|----------------|--------|
-| Spawn child | gateway `agent` RPC, `lane:"subagent"` → `{runId, status:"accepted", childSessionKey}` | `src/agents/tools/sessions-spawn-tool.ts`, spawn harness |
-| **In-code await** | `agent.wait({runId, timeoutMs})` → `{status:"ok"\|"timeout", startedAt, endedAt}` | `src/agents/openclaw-tools.subagents.sessions-spawn.test-harness.ts:299` |
-| Fetch child output | `chat.history(childSessionKey)` → assistant text | spawn harness `chat.history` branch |
+| Spawn child | **`api.runtime.subagent.run({sessionKey, message, deliver:false})` → `{runId}`** (the injected plugin runtime; wraps the gateway `agent` lane:subagent RPC) | `src/plugins/runtime/types.ts` (`PluginRuntime.subagent`), verified in 2026.6.1 d.ts |
+| **In-code await** | **`api.runtime.subagent.waitForRun({runId, timeoutMs})`** → `{status:"ok"\|"error"\|"timeout", error?}` | same |
+| Fetch child output | **`api.runtime.subagent.getSessionMessages({sessionKey})`** → `{messages: unknown[]}` (narrow to last assistant text) | same |
+
+> **Spike correction (2026-06-06):** an earlier draft assumed plugins call a raw `GatewayClient`/`agent.wait`/`chat.history`. Verified: in-gateway plugins use the injected **`api.runtime.subagent`** surface above; `GatewayClient` (`openclaw/plugin-sdk/gateway-runtime`) is only for out-of-process CLI/test clients. See `docs/superpowers/plans/api-findings.md`.
 | Background long task | `createRunningTaskRun` → `recordTaskRunProgressByRunId` → `completeTaskRunByRunId`/`failTaskRunByRunId`; `registerDetachedTaskRuntime(pluginId, runtime)` to own lifecycle | `src/tasks/detached-task-runtime.ts` |
 | Plugin → gateway/runtime | `api.runtime` (`PluginRuntime`); `src/plugin-sdk/gateway-runtime.ts`; agent-harness runtimes | `src/plugins/api-builder.ts`, `src/plugin-sdk/*` |
 | Canvas panel | A2UI JSONL via `buildA2UITextJsonl` (structured data, browser-renderable) | `extensions/canvas/src/a2ui-jsonl.ts` |
@@ -131,7 +133,8 @@ The LLM writes a JS script using:
 ## 9. Constraints & risks from real source (resolve in plan / Phase-0 spike)
 
 - **SQLite-only state** — no JSON/JSONL sidecars for run state, journal, or cache (core rule). Use shared state DB / plugin KV.
-- **No core imports** — plugin prod code must not import core `src/**`; only `openclaw/plugin-sdk/*`, manifest, injected runtime. Confirm `gateway-runtime.ts` / agent-harness runtime expose spawn + `agent.wait` + `chat.history` to plugins (the one remaining API-surface check).
+- **No core imports** — plugin prod code must not import core `src/**`; only `openclaw/plugin-sdk/*`, manifest, injected runtime. ✅ RESOLVED (spike): the spine is the injected **`api.runtime.subagent`** (`run`/`waitForRun`/`getSessionMessages`); TypeBox `Type` comes from the `typebox` package directly (the SDK does not re-export it). See `api-findings.md`.
+- ⚠️ **Live-env version skew (discovered in build/verify run):** the user's running gateway is `openclaw@2026.1.30` (an end-user build whose `dist/plugin-sdk/` ships only `index.js` — no `tool-plugin`/`plugin-entry` modules) while plugin authoring needs `openclaw@2026.6.1`. So a plugin **cannot load on the 2026.1.30 gateway**, and its older config schema differs. Live verification requires a matching plugin-author gateway build (see §10 / live blocker).
 - **Depth-1 / maxChildren=5 / maxConcurrent=8** — must raise via doctor and self-limit; verify our orchestrator (main session) actually gets spawn capability.
 - **No hot reload** — installed plugin changes need `openclaw gateway restart`; push fast feedback to the pure-unit layer.
 - **Toolchain parity** — TS ESM strict, Vitest (never raw `vitest`), `oxfmt` (not Prettier), `tsgo` (not `tsc`), Node 22.19+/24.

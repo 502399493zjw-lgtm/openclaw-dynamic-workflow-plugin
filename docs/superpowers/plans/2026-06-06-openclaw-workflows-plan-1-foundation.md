@@ -221,7 +221,7 @@ git commit -m "docs: confirm spawn/agent.wait/chat.history spine callable from p
 - Create: `src/skeleton/spawn-bridge.ts`
 - Modify: `src/index.ts` (register a temporary `workflow` tool)
 
-> Use the exact specifiers/signatures recorded in `api-findings.md`. The code below is the target shape; substitute the real SDK names where noted.
+> ⚠️ **CORRECTED after the spike (see `api-findings.md` + the committed `src/skeleton/spawn-bridge.ts`):** the code below was WRONG — there is no `api.runtime.gatewayClient()` and plugins do not call raw `agent`/`agent.wait`/`chat.history` RPCs in-process. The real spine is the injected **`api.runtime.subagent`**: `run({sessionKey, message, deliver:false}) → {runId}`, `waitForRun({runId, timeoutMs}) → {status}`, `getSessionMessages({sessionKey}) → {messages: unknown[]}`. The implemented `spawn-bridge.ts` uses that surface; treat the block below as historical.
 
 - [ ] **Step 1: Write the host bridge** `src/skeleton/spawn-bridge.ts`
 

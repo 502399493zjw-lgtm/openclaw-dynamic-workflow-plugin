@@ -1,0 +1,8 @@
+{
+  "id": "workflows",
+  "name": "Dynamic Workflows",
+  "description": "Claude-Code-style dynamic workflows: orchestrate many sub-agents from an LLM-written script.",
+  "entry": "./dist/index.js",
+  "configSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+  "contracts": { "tools": ["workflow"] }
+}
