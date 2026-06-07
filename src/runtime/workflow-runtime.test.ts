@@ -134,13 +134,26 @@ describe("runWorkflow", () => {
     expect(events.indexOf("s2:fast")).toBeGreaterThan(-1);
   });
 
-  it("a failed agent yields null, run continues", async () => {
+  it("a failed agent with no output yields null, run continues", async () => {
     const fake = fakeSubagent();
     fake.rt.waitForRun = async () => ({ status: "error", error: "boom" });
+    // A run that errored before producing any assistant text → no text to keep.
+    fake.rt.getSessionMessages = async () => ({ messages: [] });
     const result = await runWorkflow(base({
       script: `const r = await parallel([() => agent("a")]); return r;`, subagent: fake.rt,
     }));
     expect(result).toEqual([null]);
+  });
+
+  it("a non-ok status still RETURNS collected text (don't discard a partial answer)", async () => {
+    const fake = fakeSubagent();
+    // The run ends non-ok (e.g. a soft timeout) but the agent already produced a
+    // final answer — that text must survive, not be dropped to null.
+    fake.rt.waitForRun = async () => ({ status: "timeout" });
+    const result = await runWorkflow(base({
+      script: `return await agent("a");`, subagent: fake.rt,
+    }));
+    expect(result).toBe("reply:a");
   });
 
   it("exposes args; budget hard-ceiling stops new spawns", async () => {

@@ -134,7 +134,12 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
           // otherwise and cannot tell why (e.g. a rejected model override).
           emit({ type: "log", phase: myPhase, message: `agent ${label} did not complete (${r.status})` });
         }
-        const output = r.status === "ok" ? r.output : null;
+        // Keep any collected text even on a non-ok status: a sub-agent that hit a
+        // tool error or a soft timeout often still produced a usable final answer,
+        // and discarding it (returning null) loses real content. Only fall to null
+        // when there is genuinely no text to return.
+        const hasText = typeof r.output === "string" && r.output.trim().length > 0;
+        const output = hasText ? r.output : r.status === "ok" ? r.output : null;
         await record(output);
         emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: r.status });
         return output;
