@@ -358,6 +358,14 @@ export function createWorkflowTool() {
         token: gw?.auth?.token,
         idempotencyPrefix: `wf-${ctx.toolCallId}`,
       });
+      // Wait for each spawned sub-agent at least as long as the gateway's own
+      // per-agent run budget — otherwise a slow sub-agent (e.g. many web fetches)
+      // is abandoned early and falsely reported as a timeout (it has up to this
+      // budget to finish). Mirror agents.defaults.timeoutSeconds (default 600s) + margin.
+      const agentBudgetSec =
+        (ctx.api as { config?: { agents?: { defaults?: { timeoutSeconds?: number } } } }).config?.agents
+          ?.defaults?.timeoutSeconds ?? 600;
+      const spawnTimeoutMs = Math.max(120_000, agentBudgetSec * 1000 + 30_000);
       const run = (): Promise<unknown> =>
         runWorkflow({
           script,
@@ -366,6 +374,7 @@ export function createWorkflowTool() {
           baseSessionKey,
           concurrency: 16,
           onEvent,
+          spawnTimeoutMs,
           schemaValidatorFactory: (schema) => typeboxValidator(schema as never),
           journal,
         });

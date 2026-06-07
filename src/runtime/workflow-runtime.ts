@@ -33,6 +33,12 @@ export type RunWorkflowOpts = {
   totalCap?: number;
   budgetTotal?: number | null;
   onEvent?: (e: WorkflowEvent) => void;
+  // How long to wait (ms) for each spawned sub-agent to terminate before giving up.
+  // MUST be >= the gateway's per-agent run budget (agents.defaults.timeoutSeconds),
+  // else a legitimately slow sub-agent (e.g. one doing many web fetches) is abandoned
+  // early and falsely reported as a timeout. The tool sets this from config; the
+  // 120s spawn-bridge default is only a last-resort fallback for unit tests.
+  spawnTimeoutMs?: number;
   // Wires `schema` (opaque to the engine) to a text validator; the tool injects a TypeBox-backed factory.
   schemaValidatorFactory?: (schema: unknown) => Validator<unknown>;
   // Optional resume journal (Plan #3 §3.5). When present, `agent()` checks it
@@ -105,7 +111,7 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
       };
       const runOnce = async (correction?: string) => {
         const message = correction ? `${prompt}\n\n${correction}` : prompt;
-        return spawnAwaitCollect(opts.subagent, sessionKey, message, undefined, runOptions);
+        return spawnAwaitCollect(opts.subagent, sessionKey, message, opts.spawnTimeoutMs, runOptions);
       };
       // §3.5: record a successful result into the journal (best-effort).
       const record = async (value: unknown): Promise<void> => {
