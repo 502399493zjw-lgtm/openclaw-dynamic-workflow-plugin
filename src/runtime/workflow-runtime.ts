@@ -79,9 +79,9 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
     const myPhase = phaseName;
     const label = agentOpts?.label ?? `${myPhase}#${mySeq}`;
     // Observability: a single-line prompt preview + the effective first-response
-    // timeout (default 120s; see createGatewaySubagent) carried on agent:start.
+    // timeout (default 600s; see DEFAULT_SPAWN_RPC_TIMEOUT_MS) carried on agent:start.
     const promptPreview = prompt.replace(/\s+/g, " ").trim().slice(0, 100);
-    const timeoutSec = agentOpts?.timeout ?? 120;
+    const timeoutSec = agentOpts?.timeout ?? 600;
     // §3.5: a resume re-run keys cached agent results by `{callSite, prompt}`.
     const journalKey = { callSite: `${myPhase}#${mySeq}`, prompt };
     return scheduler.schedule(async () => {

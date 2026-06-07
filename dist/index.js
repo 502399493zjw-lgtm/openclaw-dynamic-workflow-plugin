@@ -4666,7 +4666,7 @@ async function runWorkflow(opts) {
     const myPhase = phaseName;
     const label = agentOpts?.label ?? `${myPhase}#${mySeq}`;
     const promptPreview = prompt.replace(/\s+/g, " ").trim().slice(0, 100);
-    const timeoutSec = agentOpts?.timeout ?? 120;
+    const timeoutSec = agentOpts?.timeout ?? 600;
     const journalKey = { callSite: `${myPhase}#${mySeq}`, prompt };
     return scheduler.schedule(async () => {
       if (opts.journal) {
@@ -8864,7 +8864,7 @@ function createCanvasSurface(opts) {
 // src/skeleton/gateway-subagent.ts
 import { callGatewayFromCli } from "openclaw/plugin-sdk/gateway-runtime";
 var idempotencySeq = 0;
-var DEFAULT_SPAWN_RPC_TIMEOUT_MS = 12e4;
+var DEFAULT_SPAWN_RPC_TIMEOUT_MS = 6e5;
 function createGatewaySubagent(conn) {
   const baseOpts = {
     url: conn.url,
@@ -9026,7 +9026,7 @@ function createWorkflowTool() {
       ),
       script: typebox_exports.Optional(
         typebox_exports.String({
-          description: "JS orchestration script body (async; no imports; top-level await ok; end with `return <result>`). Injected primitives: agent(prompt: string, opts?: {schema?, label?, agent?, timeout?}): Promise<string|object> \u2014 spawn one sub-agent (opts.agent routes to a named agent from agents.list \u2014 that is how you pick a different model/tools/persona; per-call model overrides are NOT supported; opts.timeout is the first-response window in SECONDS, default 120 \u2014 raise it for a child that is slow to start, e.g. deep web research or large analysis); parallel(...thunks) or parallel([thunks]): Promise<any[]> \u2014 run thunks (e.g. () => agent('x')) concurrently; pipeline(items: any[], ...stages): Promise<any[]> \u2014 run each item through the stage fns; phase(name: string) and log(msg: string) for progress. Also: args (the passed args value). Required for run/save. Example: return await parallel(() => agent('a'), () => agent('b'));"
+          description: "JS orchestration script body (async; no imports; top-level await ok; end with `return <result>`). Injected primitives: agent(prompt: string, opts?: {schema?, label?, agent?, timeout?}): Promise<string|object> \u2014 spawn one sub-agent (opts.agent routes to a named agent from agents.list \u2014 that is how you pick a different model/tools/persona; per-call model overrides are NOT supported; opts.timeout is the first-response window in SECONDS, default 600 \u2014 raise it for a child that is slow to start, e.g. deep web research or large analysis); parallel(...thunks) or parallel([thunks]): Promise<any[]> \u2014 run thunks (e.g. () => agent('x')) concurrently; pipeline(items: any[], ...stages): Promise<any[]> \u2014 run each item through the stage fns; phase(name: string) and log(msg: string) for progress. Also: args (the passed args value). Required for run/save. Example: return await parallel(() => agent('a'), () => agent('b'));"
         })
       ),
       args: typebox_exports.Optional(typebox_exports.Any()),

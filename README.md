@@ -125,10 +125,10 @@ monitor:
 $ node scripts/wf-monitor.mjs
 
 🧩 workflow run · started 19:08:28
-  ▶ #1 scan-auth   ⏱120s  "Does routes/admin.ts have a missing auth check?…"
-  ▶ #2 scan-pay    ⏱120s  "Does routes/pay.ts have a missing auth check?…"
+  ▶ #1 scan-auth   ⏱600s  "Does routes/admin.ts have a missing auth check?…"
+  ▶ #2 scan-pay    ⏱600s  "Does routes/pay.ts have a missing auth check?…"
   ✓ #2 scan-pay    done (5s)
-  ✗ #1 scan-auth   timeout (120s) — first-response window exceeded
+  ✗ #1 scan-auth   timeout (600s) — first-response window exceeded
   ── run complete ──
 ```
 
@@ -191,7 +191,7 @@ Then real-gateway testing surfaced — and fixed — a series of issues:
 | author | Agent-written scripts tripped on `parallel(a, b)` vs `parallel([a, b])` | `parallel()` accepts **varargs or an array**; primitives documented so the authoring agent gets it right unaided |
 | detached | `scheduleSessionTurn` (push "finished") is trust-gated to bundled plugins — a no-op for an external one | Detached returns a `flowId`; result is **pulled** via `action:"status"` |
 | null | A failed sub-agent collapsed to a bare `null` — even nested `{a:null,b:null}` — with no reason | **Surface the failure reason** at every shape; keep partial text on a non-ok status instead of discarding it |
-| **timeout** | **Multi-minute research sub-agents kept returning `null`** — the recurring saga | Root cause: OpenClaw's SDK default **10s RPC first-response timeout**. Fixed: **120s default** first-response window + per-agent **`{ timeout }`** (seconds). This is the fix that made real research work. |
+| **timeout** | **Multi-minute research sub-agents kept returning `null`** — the recurring saga | Root cause: OpenClaw's SDK default **10s RPC first-response timeout**. Fixed: a generous first-response window (now **600s / 10 min** default, aligned with the gateway's per-agent run budget) + per-agent **`{ timeout }`** (seconds). This is the fix that made real research work. |
 | security | The `node:vm` "sandbox" was implied to be a boundary; it isn't (a host `Function` is reachable) | **Honest model (Option A):** document vm = speed-bump; the real controls are a trusted authoring agent + the approval gate — same as Claude Code |
 | review | A `codex` review pass; one suggested RPC-deadline change actually **broke spawns** | Kept the error-observability hardening; **caught the bad change with a live smoke test and reverted it** |
 | watch | No way to see the sub-agents executing mid-run | Env-gated **structured trace** + a terminal **monitor** (prompt preview, ⏱timeout, ✓/✗ + duration) — see [Watching sub-agents live](#watching-sub-agents-live) |

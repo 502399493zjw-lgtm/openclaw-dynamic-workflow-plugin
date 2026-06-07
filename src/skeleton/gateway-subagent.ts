@@ -27,12 +27,15 @@ let idempotencySeq = 0;
 // The gateway RPC client times out the FIRST-RESPONSE window of each call after
 // `opts.timeout` ms (SDK default DEFAULT_GATEWAY_RPC_TIMEOUT_MS = 10_000). 10s is fine
 // for interactive CLI calls but too tight for a sub-agent spawn, which runs a full
-// agent turn (reasoning + tools + web) and can take >10s just to start streaming under
-// load — that hit was the mysterious research-`null` (every child: "gateway timeout
-// after 10000ms"). Once streaming starts this no longer bounds total runtime, so a
-// generous default is safe. NOTE: the knob is `opts.timeout` (ms); earlier attempts set
-// `timeoutMs`/`requestTimeoutMs`, which the SDK ignores — that is why they did nothing.
-const DEFAULT_SPAWN_RPC_TIMEOUT_MS = 120_000;
+// agent turn (reasoning + tools + web) and can take minutes just to START streaming
+// under load — in a big fan-out the late agents queue for a concurrency slot on a
+// rate-limited key. The original 10s hit was the mysterious research-`null` (every
+// child: "gateway timeout after 10000ms"). Once streaming starts this is an idle /
+// inter-chunk window, NOT a total cap (the total is bounded separately by the gateway's
+// agents.defaults.timeoutSeconds), so a generous default is safe. We default to 10 min
+// to line up with that per-agent run budget. NOTE: the knob is `opts.timeout` (ms);
+// earlier attempts set `timeoutMs`/`requestTimeoutMs`, which the SDK ignores.
+const DEFAULT_SPAWN_RPC_TIMEOUT_MS = 600_000;
 
 export function createGatewaySubagent(conn: GatewaySubagentConn): SubagentRuntime {
   // The SDK types opts.timeout as a string (it comes from the `--timeout` CLI flag) but
