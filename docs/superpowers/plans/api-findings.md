@@ -928,3 +928,44 @@ passes it to `runWorkflow` instead of `api.runtime.subagent`. VERIFIED IN-GATEWA
 plugin's `workflow` tool spawns a real sub-agent and returns `PONG` (gateway log: "The workflow
 returned **PONG** … successfully spawned a sub-agent"). Unit suite 45 green, build clean. The
 self-connecting CLI client is not request-ALS-scoped, so it survives the vm/scheduler deferral.
+
+### §14 — #4 in-gateway verification results (2026-06-07)
+
+After §13 unblocked spawning, drove the isolated dev gateway (port 18790, real
+moonshot/kimi reasoning agent) to verify the four "built-but-unverified" surfaces.
+Evidence is the gateway log + the durable `flow_runs` SQLite rows (state DB
+`state/openclaw.sqlite`), not the driver return (the dev driver gives up at 10s; the
+gateway/flow completes regardless).
+
+VERIFIED:
+- §13 in-gateway spawn — workflow tool spawns a real sub-agent, returns PONG.
+- #4c detached background run — with OPENCLAW_WORKFLOWS_INLINE unset, the tool returns
+  immediately `{async:true, status:"started", flowId}` ("Workflow started in the
+  background … wait for the completion turn"). The background engine then COMPLETED and
+  PERSISTED: flow_runs row status=`succeeded`, state_json=`{"status":"done","result":"PONGDETACHED"}`.
+- #4b save → restart → run-saved — `save` writes the script to a managed flow; after a
+  full gateway process restart, `run-saved` loads + runs it and returns 42424.
+
+BUG FOUND + FIXED during #4b (commit 359ebe5): the saved-store bound to `baseSessionKey`,
+which embeds `ctx.toolCallId` (unique per call). So `save` (owner …subagent:wf-workflow:14)
+and a later `run-saved` (owner …wf-workflow:18) used different owner_keys → "saved workflow
+not found", even before any restart. Fix: bind the saved-store to a fixed
+`SAVED_OWNER_KEY = "agent:main:workflows-saved"`. SQLite confirms the new durable row lives
+under that stable owner_key (vs the old broken per-call row).
+
+KNOWN GAPS (honest):
+- Detached completion DELIVERY is incomplete (matches the "detached path is WIP" comment).
+  The background run finishes + persists, but the "workflow finished" wakeup turn targets
+  `baseSessionKey` (a synthetic `agent:main:subagent:wf-<toolCallId>` session), NOT the
+  originating user conversation — because `ToolPluginExecutionContext` exposes only
+  {api, signal, toolCallId, onUpdate}, with NO originating session key. No cron_jobs /
+  delivery_queue_entries row was produced for the wakeup. So a real user would not be
+  notified on completion. Needs either an SDK seam exposing the caller session, or delivery
+  via the gateway's own run-completion path rather than a self-scheduled turn.
+- #4a per-helper model via a named agent (`agent(prompt,{agent:"auditor"})`) — the sessionKey
+  routing code is in place, but the `auditor` agent returns null in the minimal dev gateway
+  (the named agent needs full provisioning / workspace to actually run). Routing is wired,
+  not live-proven.
+- Canvas surface (needs a paired UI node) and the before_tool_call approval hook (needs a
+  human approver; only the SKIP env was exercised) are headless-blocked — not verifiable in
+  this setup.
