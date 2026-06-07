@@ -1,5 +1,5 @@
+# dist/ is committed on purpose — openclaw installs plugins without building (git-distributed)
 node_modules
-dist/
 *.log
 .DS_Store
 .devgateway/

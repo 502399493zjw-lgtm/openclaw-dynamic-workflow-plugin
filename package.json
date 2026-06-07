@@ -1,29 +1,63 @@
 {
-  "name": "openclaw-plugin-workflows",
-  "version": "0.0.0",
-  "private": true,
+  "name": "openclaw-dynamic-workflow-plugin",
+  "version": "0.1.0",
+  "description": "Claude-Code-style dynamic workflows for OpenClaw — your agent writes a JS orchestration script that fans out across isolated sub-agents. Shipped as a plugin, not a core fork.",
   "type": "module",
-  "exports": { ".": "./dist/index.js" },
+  "license": "MIT",
+  "author": "edisonzhong",
+  "homepage": "https://github.com/502399493zjw-lgtm/openclaw-dynamic-workflow-plugin#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/502399493zjw-lgtm/openclaw-dynamic-workflow-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/502399493zjw-lgtm/openclaw-dynamic-workflow-plugin/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "workflow",
+    "workflows",
+    "agents",
+    "subagents",
+    "orchestration",
+    "dynamic-workflows"
+  ],
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "main": "./dist/index.js",
-  "files": ["dist", "openclaw.plugin.json"],
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
   "openclaw": {
-    "extensions": ["./src/index.ts"],
-    "runtimeExtensions": ["./dist/index.js"]
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ]
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc --noEmit -p tsconfig.json && esbuild src/index.ts --bundle --platform=node --format=esm --external:openclaw --external:'openclaw/*' --outfile=dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "test:watch": "vitest"
   },
-  "peerDependencies": { "openclaw": "*" },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
   "dependencies": {
     "typebox": "1.1.39"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.0",
     "openclaw": "2026.6.1",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0",
-    "@types/node": "^22.0.0"
+    "vitest": "^2.1.0"
   }
 }
