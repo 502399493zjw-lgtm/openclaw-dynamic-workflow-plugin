@@ -54,7 +54,14 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
 
   const agent = async (
     prompt: string,
-    agentOpts?: { schema?: unknown; label?: string; model?: string; provider?: string; system?: string },
+    agentOpts?: {
+      schema?: unknown;
+      label?: string;
+      model?: string;
+      provider?: string;
+      system?: string;
+      agent?: string;
+    },
   ): Promise<unknown> => {
     if (spawned >= totalCap) throw new Error(`TotalAgentCap reached (${totalCap})`);
     budget.assertCanSpend();
@@ -81,7 +88,14 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
         }
       }
       emit({ type: "agent:start", phase: myPhase, label, seq: mySeq });
-      const sessionKey = `${opts.baseSessionKey}:${myPhase}:${mySeq}`;
+      // api-findings §12: targeting `agentOpts.agent` runs the child AS that
+      // pre-configured OpenClaw agent — it inherits that agent's model + tool policy
+      // (resolved from the sessionKey `agent:<id>:` prefix), with no per-call override
+      // or auth gate. Default keeps the caller's agent (baseSessionKey, agent:main).
+      const baseKey = agentOpts?.agent
+        ? opts.baseSessionKey.replace(/^agent:[^:]+:/, `agent:${agentOpts.agent}:`)
+        : opts.baseSessionKey;
+      const sessionKey = `${baseKey}:${myPhase}:${mySeq}`;
       // Per-agent overrides: `system` → `extraSystemPrompt` (additive persona);
       // model/provider gated by operator config at the gateway (not our concern).
       const runOptions = {

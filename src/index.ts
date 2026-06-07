@@ -34,7 +34,12 @@ const entry = defineToolPlugin({
 const registerTools = entry.register;
 entry.register = (api: OpenClawPluginApi): void => {
   registerTools(api);
-  api.on("before_tool_call", workflowApprovalHandler as never);
+  // Headless/automated runs (live e2e, CI) set OPENCLAW_WORKFLOWS_SKIP_APPROVAL=1
+  // to skip the interactive approval gate — there is no human to resolve a
+  // requireApproval prompt out-of-band, so it would otherwise block the tool call.
+  if (process.env.OPENCLAW_WORKFLOWS_SKIP_APPROVAL !== "1") {
+    api.on("before_tool_call", workflowApprovalHandler as never);
+  }
 };
 
 export default entry;

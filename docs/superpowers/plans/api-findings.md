@@ -751,3 +751,170 @@ model; rely on the gateway runner log `provider=<provider>/<model>` (run.ts:3175
 session's `model`/`modelProvider` via `sessions.list`/`session.update`. **Save-survives-restart: GREEN** —
 `managedFlows` `stateJson` is committed to the durable on-disk `flow_runs` table in `state/openclaw.sqlite`
 and is re-read by owner key after a gateway restart.
+
+## 12. Spawning into a pre-configured agent
+
+Verified read-only against source clone `~/projects/openclaw` HEAD `d4b4a65` and the installed
+`openclaw@2026.6.1` d.ts in `node_modules/openclaw`. HYPOTHESIS under test: instead of per-call model/tools
+overrides (which don't exist), define a SEPARATE OpenClaw agent (e.g. `auditor`) with its own model + tool
+allow/deny + persona, then spawn the workflow child to run AS that agent so it inherits that config.
+
+### 12.1 Targeting a different agent on spawn — verdict per sub-question
+
+(a) **sessionKey prefix routes config resolution to `<agentId>` — GREEN.** A child started on session key
+`agent:auditor:subagent:<uuid>` resolves its entire run config as agent `auditor`. The agentId is parsed
+from the key: `parseAgentSessionKey` splits `agent:<id>:<rest>` and returns `agentId = parts[1]`
+(`src/sessions/session-key-utils.ts:232-252`). The run pipeline derives `sessionAgentId` from the key via
+`resolveSessionAgentId` → `resolveSessionAgentIds` (`src/agents/agent-scope.ts:319-325`, parse at
+`:313-315`), used in `src/agents/agent-command.ts:692-697`, then threaded into workspace, agentDir, model,
+tools, prompt, skills (`agent-command.ts:705,709,1100,1109,1190-1192,1248,1420,1525,...`).
+
+(b) **No `agentId` param on the PLUGIN runtime `subagent.run` — CONFIG/NO.** The plugin-facing API
+`api.runtime.subagent.run` takes `SubagentRunParams = { sessionKey, message, provider?, model?,
+extraSystemPrompt?, lane?, lightContext?, deliver?, idempotencyKey? }` — NO `agentId`, NO `tools`
+(installed `node_modules/openclaw/dist/types-DOrS-soN.d.ts:4795-4805`; impl
+`src/gateway/server-plugins.ts:468-522`, which only forwards `sessionKey` to the gateway `agent` method).
+So at the plugin layer the ONLY lever to pick the target agent is the `agent:<agentId>:...` prefix of
+`sessionKey`. The separate `agentId` param the user saw lives on the BUILT-IN model-facing tool
+`sessions_spawn` (`src/agents/tools/sessions-spawn-tool.ts:179,313,472-484` → `spawnSubagentDirect`), which
+the model invokes — it is not reachable from `api.runtime.subagent.run`.
+
+CONCLUSION (item 1): the workflow plugin selects the target agent by constructing the child session key as
+`agent:<targetAgentId>:subagent:<uuid>` (this is exactly the format `spawnSubagentDirect` itself emits —
+`src/agents/subagent-spawn.ts:1219`). Passing `sessionKey: "agent:auditor:subagent:<uuid>"` to
+`subagent.run` makes the child resolve all config as `auditor`.
+
+### 12.2 Per-agent config schema (model + tools + persona) — CONFIG
+
+Multiple agents are defined as a LIST under `agents.list[]` (NOT an `agents.<id>` map). Schema
+`AgentConfig` at `src/config/types.agents.ts:80-158`; container `AgentsConfig = { defaults?, list? }` at
+`:160-163`. Per-agent fields relevant here:
+
+- **MODEL** — `AgentConfig.model?: AgentModelConfig` (`types.agents.ts:88`). `AgentModelConfig` =
+  `string | { primary?: string; fallbacks?: string[] }` (`src/config/types.agents-shared.ts:10-17`). Also
+  per-agent SUBAGENT model: `AgentConfig.subagents.model?` (`types.agents.ts:137-138`).
+- **TOOLS (allow/deny)** — `AgentConfig.tools?: AgentToolsConfig` (`types.agents.ts:155`). `AgentToolsConfig`
+  = `{ profile?, allow?, alsoAllow?, deny?, byProvider?, toolsBySender?, codeMode?, elevated?, exec?, fs?,
+  loopDetection?, message?, sandbox? }` (`src/config/types.tools.ts:398-434`). This is the real per-agent
+  allow/deny knob (deny wins, profile then allow/alsoAllow/deny).
+- **PERSONA** — NUANCE. `AgentConfig.identity?: IdentityConfig` exists (`types.agents.ts:130`) but
+  `IdentityConfig` is only `{ name?, theme?, emoji?, avatar? }` (`src/config/types.base.ts:383-389`) — it is
+  display identity, NOT a system-prompt/instructions field. There is NO per-agent `systemPrompt`/persona
+  TEXT field on `AgentConfig` (the only `systemPrompt` keys are: ACP-harness CLI flags
+  `systemPromptArg/...` at `types.agent-defaults.ts:164-174`, and a memory-flush-turn `systemPrompt` at
+  `:589` — neither is an agent persona). An agent's persona/instructions instead come from its WORKSPACE
+  bootstrap files (AGENTS.md/CLAUDE.md/identity) under that agent's `workspace`/`agentDir`
+  (`AgentConfig.workspace`/`agentDir` at `types.agents.ts:86-87`; resolved per run at
+  `agent-command.ts:705,709`). So per-agent persona = give the agent its own workspace dir with its own
+  bootstrap files. (`subagent.run({ extraSystemPrompt })` can ADD a block on top, but cannot replace the
+  base persona — see §11.7.)
+
+### 12.3 Does the child actually USE that agent's config? — GREEN
+
+When the child runs on `agent:auditor:subagent:x`, every resolver is keyed on the parsed `auditor`:
+
+- **Model** — `resolveSubagentSpawnModelSelection({ agentId: targetAgentId })` reads
+  `resolveAgentConfig(cfg, agentId)?.subagents?.model ?? agents.defaults.subagents.model ??
+  agentConfig?.model` (`src/agents/model-selection.ts:326-337,359-385`; target chosen in
+  `subagent-spawn.ts:1169,1266-1274` via `subagent-spawn-plan.ts:50-63`). At run time the model is again
+  resolved for `sessionAgentId` (`agent-command.ts:1190-1192`).
+- **Tools (allow/deny)** — `resolveEffectiveToolPolicy` derives agentId from the sessionKey
+  (`resolveAgentIdFromSessionKey`) → `resolveAgentConfig(config, agentId)` → `agentTools = agentConfig.tools`
+  and layers its profile/allow/alsoAllow/deny/byProvider over global
+  (`src/agents/agent-tools.policy.ts:450-535`, agentId at `:461-466`). So the child gets the TARGET agent's
+  tool policy, not main's.
+- **Persona/workspace** — `resolveAgentWorkspaceDir(cfg, sessionAgentId)` and `resolveAgentDir(cfg,
+  sessionAgentId)` (`agent-command.ts:705,709`) load the target agent's workspace bootstrap. The subagent
+  preamble (`src/agents/subagent-system-prompt.ts:10-128`) is layered ON TOP of that base persona.
+
+### 12.4 Cross-agent spawn permission — CONFIG (gate exists)
+
+`main` spawning a child as `auditor` is GATED by an allowlist. Default policy: a requester may only spawn
+its OWN agent id; targeting a DIFFERENT agent requires `subagents.allowAgents` to permit it. Gate:
+`resolveSubagentTargetPolicy` (`src/agents/subagent-target-policy.ts:84-120`): returns ok only if
+`requestedAgentId` is empty and target==requester, OR target is in the resolved allowlist. Allowlist source:
+`resolveAgentConfig(cfg, requesterAgentId)?.subagents?.allowAgents ?? cfg.agents.defaults.subagents.allowAgents`
+(`subagent-spawn.ts:1204-1212`). `allowAgents` is `string[]`, supports `"*"` (any configured agent) and is
+intersected with the configured agent registry (`subagent-target-policy.ts:51-82`). Schema:
+`AgentConfig.subagents.allowAgents?: string[]` (`types.agents.ts:135-136`). NOTE this gate lives in
+`spawnSubagentDirect` (the built-in tool path). The PLUGIN `subagent.run` path does NOT call
+`spawnSubagentDirect` — it forwards `sessionKey` straight to the gateway `agent` method
+(`server-plugins.ts:494-516`), so the plugin can construct any `agent:<id>:...` key directly. The cross-agent
+allowlist therefore constrains the MODEL-driven `sessions_spawn` tool; the native plugin runtime is trusted
+in-process (`PluginRuntime` is the "trusted in-process runtime surface",
+`types-DOrS-soN.d.ts:4852`) and is not re-gated by `allowAgents`. The hard requirement is that `auditor`
+must be a CONFIGURED agent (present in `agents.list[]`) so its config resolves; an unknown id falls back to
+default-agent resolution and `isValidAgentId` formatting only.
+
+### 12.5 Live verification signal — how to confirm the child ran as `auditor`
+
+1. **Session identity** — `sessions.list` / subagent-list item exposes both `agentId` (parsed from the
+   child session key, `src/agents/subagent-list.ts:70`) and the resolved `model` (`:50`). Assert the child
+   row shows `agentId="auditor"` and auditor's model.
+2. **Gateway runner log** — the embedded runner logs `provider=${provider}/${modelId}` per turn
+   (`src/agents/embedded-agent-runner/run.ts:3175`, also 1448/1773). A distinct auditor model shows up here.
+3. **Behavioral check (strongest)** — give `auditor` a tool DENY (e.g. `agents.list[auditor].tools.deny:
+   ["exec"]`) that `main` lacks; spawn the child as auditor and have it attempt that tool. It must be
+   refused, proving the auditor tool policy (not main's) is in force. Equivalently, give auditor a distinct
+   `model` and confirm via signals 1/2.
+
+### 12.6 One-paragraph feasibility verdict
+
+**Can per-helper tools+model+persona be achieved by spawning into a pre-configured agent? YES** (with one
+caveat on persona). EXACT RECIPE:
+
+1. **Define the agent in config** (`openclaw.json`), as a new entry in `agents.list[]`:
+   `{ "id": "auditor", "model": "anthropic/claude-opus-4-8", "workspace": "<dir with auditor's
+   AGENTS.md/CLAUDE.md persona>", "tools": { "profile": "...", "allow": [...], "deny": [...] } }`. Model →
+   `model`; tools allow/deny → `tools.allow`/`tools.deny`; persona → the agent's own `workspace`/`agentDir`
+   bootstrap files (NOT a config string — `identity` is display-only). Optionally set
+   `subagents.model` for the model used when auditor itself spawns children.
+2. **Target it from our `agent()` helper**: build the child session key as
+   `agent:auditor:subagent:${crypto.randomUUID()}` and call
+   `api.runtime.subagent.run({ sessionKey, message, ... })`. Do NOT pass `model`/`provider`/`tools` per call
+   — the agent config supplies them. (`extraSystemPrompt` may still add a per-run block on top of auditor's
+   persona.)
+3. **Allowlist**: NOT required for the plugin runtime path (`subagent.run` bypasses the `allowAgents` gate;
+   that gate only constrains the model-facing `sessions_spawn` tool). The only requirement is that `auditor`
+   exists in `agents.list[]`. (If we ever route through the `sessions_spawn` tool / `spawnSubagentDirect`
+   instead, then `main`'s `subagents.allowAgents` must include `"auditor"` or `"*"`.)
+4. **Live-verify**: `sessions.list` shows the child with `agentId="auditor"` + auditor's `model`; gateway log
+   shows `provider=<auditor model>`; and a tool auditor denies-but-main-allows is refused in the child.
+
+CAVEAT (persona): per-agent persona is achievable but NOT via a config string — it requires giving the
+agent its own workspace/bootstrap files. If the desired "persona" is just an extra instruction block,
+`subagent.run({ extraSystemPrompt })` is simpler and needs no separate agent. Use the separate-agent
+approach when you specifically need per-helper TOOL POLICY and/or per-helper MODEL isolation, which the
+per-call API cannot give (no per-call tools param; per-call model is auth-gated per §11.7).
+
+## 13. In-gateway spawn blocker (CRITICAL — found by the real install test)
+
+Installing the plugin into a real isolated 2026.6.1 gateway and driving the `workflow`
+tool via the main agent revealed that `agent()` spawns FAIL in-gateway:
+`api.runtime.subagent.run(...)` throws **"Plugin runtime subagent methods are only
+available during a gateway request."** (`src/plugin-sdk/error-runtime.ts`).
+
+Root cause: the subagent runtime is bound to a per-request **AsyncLocalStorage** scope
+(`src/plugins/runtime/gateway-request-scope.ts`), but our orchestration script runs in a
+`node:vm` sandbox + a deferred concurrency scheduler. That request scope is not present
+where our deferred/sandboxed spawns execute — it throws even for a single synchronous
+`agent()` with no journal, and `AsyncResource.bind` at execute time did not restore it
+(the scope is not active at the tool's execute boundary either).
+
+Why the 6 out-of-process "live" tests passed anyway: they drive a `SubagentRuntime`
+ADAPTER built on `callGatewayFromCli` ("agent"/"agent.wait"/"chat.history" RPCs over a
+GatewayClient), which does NOT need the request ALS scope. That proved the engine + spine
+LOGIC end-to-end, but masked this real in-gateway integration gap.
+
+FIX DIRECTION (next work): inside `workflow-tool.ts`, replace `ctx.api.runtime.subagent`
+with a self-connecting `GatewayClient` (loopback url + gateway token) using the SAME
+agent/agent.wait/chat.history mechanism the live tests proved. This sidesteps the
+request-scope requirement. (The detached/managedFlows path is blocked by the same issue —
+its background child spawn never runs.)
+
+Confirmed working in-gateway: plugin loads, the main agent calls the `workflow` tool, the
+tool executes; only the sub-agent spawn (via api.runtime.subagent) is blocked. Headless
+escape hatches added: OPENCLAW_WORKFLOWS_SKIP_APPROVAL=1 (skip the approval hook),
+OPENCLAW_WORKFLOWS_INLINE=1 (force inline over detached). Per-agent routing via
+`agent(prompt,{agent})` (sessionKey prefix, §12) is wired but untested in-gateway pending
+this fix.
