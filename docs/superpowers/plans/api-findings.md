@@ -918,3 +918,13 @@ escape hatches added: OPENCLAW_WORKFLOWS_SKIP_APPROVAL=1 (skip the approval hook
 OPENCLAW_WORKFLOWS_INLINE=1 (force inline over detached). Per-agent routing via
 `agent(prompt,{agent})` (sessionKey prefix, §12) is wired but untested in-gateway pending
 this fix.
+
+### §13 — RESOLVED (2026-06-07)
+
+FIXED as planned: `src/skeleton/gateway-subagent.ts` exposes `createGatewaySubagent({url, token})`
+(a `SubagentRuntime` over `callGatewayFromCli` agent/agent.wait/chat.history). `workflow-tool.ts`
+now builds it from `ctx.api.config.gateway` (loopback `ws://127.0.0.1:<port>` + `auth.token`) and
+passes it to `runWorkflow` instead of `api.runtime.subagent`. VERIFIED IN-GATEWAY: the installed
+plugin's `workflow` tool spawns a real sub-agent and returns `PONG` (gateway log: "The workflow
+returned **PONG** … successfully spawned a sub-agent"). Unit suite 45 green, build clean. The
+self-connecting CLI client is not request-ALS-scoped, so it survives the vm/scheduler deferral.

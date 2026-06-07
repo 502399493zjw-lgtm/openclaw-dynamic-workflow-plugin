@@ -32,6 +32,7 @@ import { resolveWorkflowAction, type SavedStoreDeps } from "./runtime/saved-stor
 import { runDetached, type ManagedFlows, type ScheduleSessionTurn, type JsonValue } from "./runtime/detached.js";
 import { createResumeJournal } from "./runtime/resume-journal.js";
 import { createCanvasSurface, type NodesInvoke } from "./surface/canvas-surface.js";
+import { createGatewaySubagent } from "./skeleton/gateway-subagent.js";
 
 function progress(ctx: ToolPluginExecutionContext, text: string, id: string): void {
   // `AgentToolResult` shape (api-findings.md §4): content + details + progress,
@@ -287,12 +288,22 @@ export function createWorkflowTool() {
         void canvas.flush();
       };
 
+      // §13: spawn via a self-connecting gateway client (loopback url + token from
+      // config) instead of the request-ALS-scoped api.runtime.subagent — which throws
+      // once our node:vm sandbox + scheduler defer the call. Same agent/agent.wait/
+      // chat.history adapter the live tests prove.
+      const gw = (ctx.api as { config?: { gateway?: { port?: number; auth?: { token?: string } } } }).config
+        ?.gateway;
+      const selfSubagent = createGatewaySubagent({
+        url: `ws://127.0.0.1:${gw?.port ?? 18789}`,
+        token: gw?.auth?.token,
+        idempotencyPrefix: `wf-${ctx.toolCallId}`,
+      });
       const run = (): Promise<unknown> =>
         runWorkflow({
           script,
           args: runArgs,
-          subagent: (ctx.api as { runtime: { subagent: Parameters<typeof runWorkflow>[0]["subagent"] } }).runtime
-            .subagent,
+          subagent: selfSubagent,
           baseSessionKey,
           concurrency: 16,
           onEvent,

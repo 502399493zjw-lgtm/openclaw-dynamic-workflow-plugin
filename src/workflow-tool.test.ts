@@ -1,36 +1,47 @@
-import { describe, it, expect } from "vitest";
-import { createWorkflowTool } from "./workflow-tool.js";
-import type { SubagentRuntime } from "./skeleton/spawn-bridge.js";
+import { describe, it, expect, vi } from "vitest";
 
-function fakeSubagent(): SubagentRuntime {
+// §13: the tool now spawns via a self-connecting GatewayClient (callGatewayFromCli),
+// not the injected api.runtime.subagent. Mock that RPC layer to simulate
+// agent / agent.wait / chat.history so the unit test exercises the REAL path.
+vi.mock("openclaw/plugin-sdk/gateway-runtime", () => {
   const store = new Map<string, string>();
   return {
-    run: async ({ sessionKey, message }) => {
-      store.set(sessionKey, `echo:${message}`);
-      return { runId: "r" };
+    callGatewayFromCli: async (method: string, _opts: unknown, params: Record<string, unknown>) => {
+      if (method === "agent") {
+        store.set(String(params.sessionKey), `echo:${String(params.message)}`);
+        return { runId: "r" };
+      }
+      if (method === "agent.wait") return { status: "ok" };
+      if (method === "chat.history") {
+        return {
+          messages: [
+            { role: "assistant", content: [{ type: "text", text: store.get(String(params.sessionKey)) ?? "" }] },
+          ],
+        };
+      }
+      return {};
     },
-    waitForRun: async () => ({ status: "ok" }),
-    getSessionMessages: async ({ sessionKey }) => ({
-      messages: [{ role: "assistant", content: [{ type: "text", text: store.get(sessionKey) ?? "" }] }],
-    }),
   };
-}
+});
+
+import { createWorkflowTool } from "./workflow-tool.js";
 
 describe("workflow tool", () => {
   it("runs a script and returns its result; emits progress", async () => {
     const updates: unknown[] = [];
     const tool = createWorkflowTool();
+    // No api.runtime → tool runs inline with the (mocked) self-connecting subagent.
     const ctx = {
-      api: { runtime: { subagent: fakeSubagent() } },
+      api: { config: { gateway: { port: 18790, auth: { token: "t" } } } },
       toolCallId: "call-1",
       onUpdate: (u: unknown) => updates.push(u),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
     const result = await tool.execute(
       { script: `phase("scan"); return await parallel([() => agent("A"), () => agent("B")]);` },
       {},
       ctx,
     );
-    // result is wrapped as the tool's return; assert it carries the two echoes
     const text = JSON.stringify(result);
     expect(text).toContain("echo:A");
     expect(text).toContain("echo:B");
