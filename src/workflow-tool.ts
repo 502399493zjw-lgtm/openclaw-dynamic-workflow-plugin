@@ -207,9 +207,10 @@ export function createWorkflowTool() {
           description:
             "JS orchestration script body (async; no imports; top-level await ok; end with `return <result>`). " +
             "Injected primitives: " +
-            "agent(prompt: string, opts?: {schema?, label?, agent?}): Promise<string|object> — spawn one sub-agent " +
+            "agent(prompt: string, opts?: {schema?, label?, agent?, timeout?}): Promise<string|object> — spawn one sub-agent " +
             "(opts.agent routes to a named agent from agents.list — that is how you pick a different model/tools/persona; " +
-            "per-call model overrides are NOT supported); " +
+            "per-call model overrides are NOT supported; opts.timeout is the first-response window in SECONDS, default 120 — " +
+            "raise it for a child that is slow to start, e.g. deep web research or large analysis); " +
             "parallel(...thunks) or parallel([thunks]): Promise<any[]> — run thunks (e.g. () => agent('x')) concurrently; " +
             "pipeline(items: any[], ...stages): Promise<any[]> — run each item through the stage fns; " +
             "phase(name: string) and log(msg: string) for progress. Also: args (the passed args value). " +

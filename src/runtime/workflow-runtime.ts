@@ -67,6 +67,9 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
       provider?: string;
       system?: string;
       agent?: string;
+      // First-response timeout in SECONDS for this one sub-agent (default ~120s).
+      // Raise it for a child that is slow to start (deep web research, big analysis).
+      timeout?: number;
     },
   ): Promise<unknown> => {
     if (spawned >= totalCap) throw new Error(`TotalAgentCap reached (${totalCap})`);
@@ -108,6 +111,8 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
         model: agentOpts?.model,
         provider: agentOpts?.provider,
         extraSystemPrompt: agentOpts?.system,
+        // `timeout` is author-facing seconds → the spawn bridge wants ms.
+        rpcTimeoutMs: agentOpts?.timeout !== undefined ? agentOpts.timeout * 1000 : undefined,
       };
       const runOnce = async (correction?: string) => {
         const message = correction ? `${prompt}\n\n${correction}` : prompt;

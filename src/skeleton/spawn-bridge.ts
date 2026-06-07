@@ -15,6 +15,7 @@ export type SubagentRuntime = {
     model?: string;
     extraSystemPrompt?: string;
     deliver?: boolean;
+    rpcTimeoutMs?: number;
   }) => Promise<{ runId: string }>;
   waitForRun: (params: {
     runId: string;
@@ -39,6 +40,10 @@ export type SpawnRunOptions = {
   model?: string;
   provider?: string;
   extraSystemPrompt?: string;
+  // Per-spawn override (ms) for the gateway-client first-response window. Lets a
+  // known-slow child (e.g. deep web research) wait longer than the 120s default
+  // before the RPC gives up. Undefined → the createGatewaySubagent default.
+  rpcTimeoutMs?: number;
 };
 
 // `getSessionMessages` returns `messages: unknown[]`, so narrow each row
@@ -91,6 +96,7 @@ export async function spawnAwaitCollect(
     ...(runOptions?.extraSystemPrompt !== undefined
       ? { extraSystemPrompt: runOptions.extraSystemPrompt }
       : {}),
+    ...(runOptions?.rpcTimeoutMs !== undefined ? { rpcTimeoutMs: runOptions.rpcTimeoutMs } : {}),
   });
 
   const waited = await subagent.waitForRun({ runId, timeoutMs });

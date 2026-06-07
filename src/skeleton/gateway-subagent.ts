@@ -24,13 +24,29 @@ export type GatewaySubagentConn = {
 // (banned in workflow scripts; this module is plugin code, but a counter is simplest).
 let idempotencySeq = 0;
 
+// The gateway RPC client times out the FIRST-RESPONSE window of each call after
+// `opts.timeout` ms (SDK default DEFAULT_GATEWAY_RPC_TIMEOUT_MS = 10_000). 10s is fine
+// for interactive CLI calls but too tight for a sub-agent spawn, which runs a full
+// agent turn (reasoning + tools + web) and can take >10s just to start streaming under
+// load — that hit was the mysterious research-`null` (every child: "gateway timeout
+// after 10000ms"). Once streaming starts this no longer bounds total runtime, so a
+// generous default is safe. NOTE: the knob is `opts.timeout` (ms); earlier attempts set
+// `timeoutMs`/`requestTimeoutMs`, which the SDK ignores — that is why they did nothing.
+const DEFAULT_SPAWN_RPC_TIMEOUT_MS = 120_000;
+
 export function createGatewaySubagent(conn: GatewaySubagentConn): SubagentRuntime {
-  // IMPORTANT: do NOT set an explicit timeoutMs/requestTimeoutMs here. With
-  // expectFinal:true the "agent" call long-polls for the whole child run; setting a
-  // client RPC deadline paradoxically triggers a 10s gateway timeout and kills even
-  // fast spawns (verified by live smoke test). The default (no deadline) correctly
-  // waits for the child to finish — children running 47–141s collect fine.
-  const opts = { url: conn.url, token: conn.token, json: true };
+  // The SDK types opts.timeout as a string (it comes from the `--timeout` CLI flag) but
+  // parses it as a millisecond integer at runtime, so pass the ms value stringified.
+  const baseOpts = {
+    url: conn.url,
+    token: conn.token,
+    json: true,
+    timeout: String(DEFAULT_SPAWN_RPC_TIMEOUT_MS),
+  };
+  // A per-spawn override (from agent(prompt,{timeout})) replaces the default first-
+  // response window for that one child; everything else keeps the 120s default.
+  const optsFor = (rpcTimeoutMs?: number) =>
+    rpcTimeoutMs !== undefined ? { ...baseOpts, timeout: String(rpcTimeoutMs) } : baseOpts;
   const extra = {
     clientName: "cli" as const,
     expectFinal: true,
@@ -47,7 +63,7 @@ export function createGatewaySubagent(conn: GatewaySubagentConn): SubagentRuntim
       idempotencySeq += 1;
       return (await callGatewayFromCli(
         "agent",
-        opts,
+        optsFor(p.rpcTimeoutMs),
         {
           lane: "subagent",
           message: p.message,
@@ -64,14 +80,14 @@ export function createGatewaySubagent(conn: GatewaySubagentConn): SubagentRuntim
     waitForRun: async (p) =>
       (await callGatewayFromCli(
         "agent.wait",
-        opts,
+        baseOpts,
         { runId: p.runId, timeoutMs: p.timeoutMs },
         extra,
       )) as unknown as { status: "ok" | "error" | "timeout"; error?: string },
     getSessionMessages: async (p) =>
       (await callGatewayFromCli(
         "chat.history",
-        opts,
+        baseOpts,
         { sessionKey: p.sessionKey, limit: p.limit },
         extra,
       )) as unknown as { messages: unknown[] },

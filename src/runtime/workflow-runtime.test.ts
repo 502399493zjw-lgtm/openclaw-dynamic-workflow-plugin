@@ -76,6 +76,12 @@ describe("runWorkflow", () => {
     });
   });
 
+  it("agent({timeout}) threads seconds into the spawn as rpcTimeoutMs (ms)", async () => {
+    const fake = fakeSubagent();
+    await runWorkflow(base({ script: `return await agent("hi", { timeout: 60 });`, subagent: fake.rt }));
+    expect(fake.lastRunParams()).toMatchObject({ rpcTimeoutMs: 60000 });
+  });
+
   it("agent() with no overrides omits model/provider/extraSystemPrompt (default behavior)", async () => {
     const fake = fakeSubagent();
     await runWorkflow(base({ script: `return await agent("hi");`, subagent: fake.rt }));
