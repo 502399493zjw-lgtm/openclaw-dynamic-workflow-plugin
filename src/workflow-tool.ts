@@ -170,6 +170,9 @@ async function resolveCanvasNodeId(nodes: NodesApi | undefined): Promise<string 
 
 const SAVED_CONTROLLER = "workflows:saved";
 const JOURNAL_CONTROLLER_PREFIX = "workflows:journal:";
+// Stable owner key for the durable saved-workflow store. Fixed (not per-call) so
+// every `save`/`run-saved`/`list` shares one flow_runs row that survives restarts.
+const SAVED_OWNER_KEY = "agent:main:workflows-saved";
 
 export function createWorkflowTool() {
   return {
@@ -216,7 +219,16 @@ export function createWorkflowTool() {
       const boundFlows = managedFlows ? managedFlows.bindSession({ sessionKey: baseSessionKey }) : undefined;
 
       // §3.6: saved-store backed by a managedFlow stateJson map (or in-memory).
-      const savedBacking = boundFlows ? createFlowStore(boundFlows, SAVED_CONTROLLER) : inMemoryStore();
+      // It MUST bind to a stable owner key — NOT baseSessionKey, which embeds the
+      // per-call toolCallId. Saved workflows are durable, shared across every
+      // `workflow` call and across gateway restarts; binding them to the ephemeral
+      // per-call session made `save` write to one owner and `run-saved` read from a
+      // different one (→ "saved workflow not found" after restart). A fixed key
+      // gives all calls one durable saved-store row in the flow_runs SQLite table.
+      const savedBoundFlows = managedFlows
+        ? managedFlows.bindSession({ sessionKey: SAVED_OWNER_KEY })
+        : undefined;
+      const savedBacking = savedBoundFlows ? createFlowStore(savedBoundFlows, SAVED_CONTROLLER) : inMemoryStore();
       const savedDeps: SavedStoreDeps = {
         save: async (id, def) => {
           const map = savedBacking.readMap();
