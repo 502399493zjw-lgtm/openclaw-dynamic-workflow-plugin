@@ -15,7 +15,7 @@ You → your OpenClaw assistant: "use a workflow to audit every route for missin
         │
         ▼  the agent writes a JS script and calls the `workflow` tool (you approve first)
    ┌──────────────────────────────────────────────────────────────┐
-   │  workflow runtime (sandboxed JS — no imports / fs / shell)     │
+   │  workflow runtime (vm-scoped JS — speed-bump, not a boundary)  │
    │    agent() ─► real OpenClaw sub-session (spawn → await → read) │
    │    parallel() / pipeline() ─► fan out (≤16 concurrent)         │
    │    results converge in script variables                        │
@@ -64,7 +64,7 @@ The `workflow` tool accepts:
 
 ## Writing a workflow script
 
-The script body runs in a sandbox with these injected globals — **no `import`/`require`/`fs`/`shell`/network**; the only I/O is through these primitives:
+The script body runs in a `node:vm` context whose only injected globals are the primitives below — ambient `import`/`require`/`fs`/`shell`/network are out of scope. **This is a speed-bump, not a security boundary** (`node:vm` is escapable; see [Security model](#security-model)); the real protection is a trusted authoring agent + the approval gate. The only intended I/O is through these primitives:
 
 | primitive | behavior |
 | --- | --- |
@@ -110,11 +110,35 @@ See **[docs/examples.md](docs/examples.md)** for more (pipeline, structured `sch
 - `action: "save"` stores a script under an `id`; `action: "run-saved"` replays it with fresh `args`. Saved defs persist in an OpenClaw managed-flow store.
 - A **resume journal** (keyed by script + args + call-site) lets a re-run reuse already-completed sub-agent results instead of re-spawning them.
 
+## Security model
+
+The `node:vm` context is **not** a security boundary — it is escapable (a host-realm
+`Function` is reachable through the injected primitives), so it only stops *accidental*
+host access and naive escapes. The actual safety controls — the **same model as Claude
+Code's workflow tool** — are: (1) the script is authored by a **trusted, aligned agent**,
+and (2) the **`before_tool_call` approval gate** (default ON) puts a human in the loop
+per run. For a personal, single-user, local gateway this is sufficient (escaping the vm
+grants nothing you don't already have on your own machine). If you ever deploy this
+gateway **multi-user or exposed to untrusted script authors**, replace the vm with a real
+isolate (`isolated-vm`) or a sandboxed subprocess. See `docs/superpowers/plans/api-findings.md` §16.
+
 ## Status & limitations
 
-- **Live-proven** on a real isolated `openclaw@2026.6.1` gateway: the `agent()` spine (spawn → in-code await via `agent.wait` → collect) and a real `parallel([agent, agent])` fan-out both return real LLM results end-to-end.
-- **Unit-tested, pending manual demo** (not auto-verifiable on a headless gateway): the Canvas render (needs a paired Canvas node), the approval block (needs a human), and detached-background + cross-turn resume (need an interactive session with OpenClaw's session-turn machinery). These are built against signatures verified in `docs/superpowers/plans/api-findings.md`.
-- External plugins can't use OpenClaw's trust-gated `openKeyedStore` or core-internal task ledger, so background/resume/save run on the sanctioned `api.runtime.tasks.managedFlows` + `scheduleSessionTurn` surfaces, with an inline + in-memory fallback when those aren't present.
+- **Live-proven** on a real isolated `openclaw@2026.6.1` gateway: the `agent()` spine
+  (spawn → in-code await via `agent.wait` → collect), `parallel`/`pipeline` fan-out,
+  schema-validated output, per-helper model via a **named agent** (`agent(p,{agent:'id'})`),
+  `save` → restart → `run-saved`, and **detached background** (returns a `flowId`, polled
+  via `action:"status"`) all return real results end-to-end.
+- **Pending manual demo** (not auto-verifiable headless): the Canvas render (needs a paired
+  Canvas node) and the interactive approval block (needs a human approver).
+- **Detached completion is PULL, not push.** OpenClaw's `scheduleSessionTurn` is trust-gated
+  to bundled plugins (a no-op for an externally-installed plugin), so a detached run does
+  not push a "finished" turn; the caller retrieves the result with `action:"status"`. Per-call
+  `{ model }` overrides are gateway-auth-gated and rejected for our caller — use a **named
+  agent** instead (the supported way to pick a model/tools/persona).
+- External plugins can't use OpenClaw's trust-gated `openKeyedStore` or core-internal task
+  ledger, so background/resume/save run on the sanctioned `api.runtime.tasks.managedFlows`
+  surface, with an inline + in-memory fallback when it isn't present.
 - Requires `2026.6.1+`; will not load on older end-user builds.
 
 ## Development

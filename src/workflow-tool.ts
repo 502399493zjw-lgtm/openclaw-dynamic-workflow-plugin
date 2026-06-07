@@ -241,7 +241,9 @@ export function createWorkflowTool() {
       const scheduleSessionTurn = getScheduleSessionTurn(api);
       // OPENCLAW_WORKFLOWS_INLINE=1 forces synchronous (inline-await) execution even
       // when the detached surfaces exist — used by live e2e to observe the run + its
-      // children directly (the detached/background path is still WIP).
+      // children directly. (Detached works via PULL: it persists the result to the
+      // flow's stateJson and the caller polls action:"status"; there is no push
+      // completion because scheduleSessionTurn is bundled-gated — see README Security.)
       const detached =
         Boolean(managedFlows && scheduleSessionTurn) &&
         process.env.OPENCLAW_WORKFLOWS_INLINE !== "1";
