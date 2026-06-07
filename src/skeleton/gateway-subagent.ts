@@ -18,6 +18,10 @@ export type GatewaySubagentConn = {
   idempotencyPrefix?: string;
   /** Extra operator scopes to request (e.g. ["operator.admin"] to authorize model override). */
   scopes?: ("operator.admin")[];
+  /** RPC deadline (ms) for each gateway call. The "agent" call blocks (expectFinal) for
+   *  the whole child run, so this must be >= the child's run budget or a long child is
+   *  cut off at the client's short default. Defaults to 120s when unset. */
+  requestTimeoutMs?: number;
 };
 
 // Each agent RPC needs a unique idempotencyKey; a monotonic counter avoids Date.now()
@@ -25,7 +29,14 @@ export type GatewaySubagentConn = {
 let idempotencySeq = 0;
 
 export function createGatewaySubagent(conn: GatewaySubagentConn): SubagentRuntime {
-  const opts = { url: conn.url, token: conn.token, json: true };
+  const opts = {
+    url: conn.url,
+    token: conn.token,
+    json: true,
+    // Match the RPC deadline to the child run budget (see requestTimeoutMs doc).
+    timeoutMs: conn.requestTimeoutMs ?? 120_000,
+    requestTimeoutMs: conn.requestTimeoutMs ?? 120_000,
+  };
   const extra = {
     clientName: "cli" as const,
     expectFinal: true,

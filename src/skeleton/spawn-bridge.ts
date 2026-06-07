@@ -29,6 +29,9 @@ export type SubagentRuntime = {
 export type SpawnAwaitCollectResult = {
   status: "ok" | "error" | "timeout";
   output: string;
+  // The gateway's failure reason from agent.wait (e.g. a billing/rate error),
+  // preserved so the engine can surface WHY a spawn ended non-ok instead of bare null.
+  error?: string;
 };
 
 /** Optional per-spawn overrides forwarded into `subagent.run` (omitted keys = default behavior). */
@@ -93,5 +96,5 @@ export async function spawnAwaitCollect(
   const waited = await subagent.waitForRun({ runId, timeoutMs });
 
   const { messages } = await subagent.getSessionMessages({ sessionKey });
-  return { status: waited.status, output: extractAssistantText(messages) };
+  return { status: waited.status, output: extractAssistantText(messages), error: waited.error };
 }

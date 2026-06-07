@@ -137,8 +137,10 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
         const r = await runOnce();
         if (r.status !== "ok") {
           // Don't swallow a non-ok spawn silently — the user sees only `null`
-          // otherwise and cannot tell why (e.g. a rejected model override).
-          emit({ type: "log", phase: myPhase, message: `agent ${label} did not complete (${r.status})` });
+          // otherwise and cannot tell why. Include the gateway's failure reason
+          // (r.error) when present (e.g. a rejected model override, billing error).
+          const why = r.error ? `: ${r.error}` : "";
+          emit({ type: "log", phase: myPhase, message: `agent ${label} did not complete (${r.status})${why}` });
         }
         // Keep any collected text even on a non-ok status: a sub-agent that hit a
         // tool error or a soft timeout often still produced a usable final answer,
@@ -147,7 +149,9 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
         const hasText = typeof r.output === "string" && r.output.trim().length > 0;
         const output = hasText ? r.output : r.status === "ok" ? r.output : null;
         await record(output);
-        emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: r.status });
+        // Carry the reason on agent:done for a no-text failure so the tool can report it.
+        const doneError = !hasText && r.status !== "ok" ? r.error ?? r.status : undefined;
+        emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: r.status, error: doneError });
         return output;
       } catch (err) {
         // A thrown spawn error (e.g. the gateway rejecting a per-call model/provider

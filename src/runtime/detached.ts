@@ -122,24 +122,35 @@ export async function runDetached(deps: DetachedDeps): Promise<DetachedStarted> 
         stateJson: { status: "done", result },
       });
     } catch (err) {
-      deps.managedFlows.fail({
-        flowId: flow.flowId,
-        expectedRevision: flow.revision,
-        stateJson: {
-          status: "failed",
-          error: err instanceof Error ? err.message : String(err),
-        },
-      });
+      // The terminal mutation can itself throw (e.g. a revision conflict); never let
+      // it escape this detached background task as an unhandled rejection.
+      try {
+        deps.managedFlows.fail({
+          flowId: flow.flowId,
+          expectedRevision: flow.revision,
+          stateJson: {
+            status: "failed",
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      } catch {
+        /* nothing else we can do for the flow record here */
+      }
     }
-    // §10.2: arm B one-shot wakeup. `message` IS the resume signal injected into
-    // the session turn; the handle is best-effort (may be `undefined`).
-    await deps.scheduleSessionTurn({
-      delayMs: 0,
-      sessionKey: deps.sessionKey,
-      message: `workflow ${flow.flowId} finished`,
-      deliveryMode: "announce",
-      deleteAfterRun: true,
-    });
+    // §10.2: arm B one-shot wakeup. `message` IS the resume signal injected into the
+    // session turn. Best-effort: scheduleSessionTurn is bundled-gated and may reject —
+    // a rejection here would otherwise become an unhandled rejection after completion.
+    try {
+      await deps.scheduleSessionTurn({
+        delayMs: 0,
+        sessionKey: deps.sessionKey,
+        message: `workflow ${flow.flowId} finished`,
+        deliveryMode: "announce",
+        deleteAfterRun: true,
+      });
+    } catch {
+      /* best-effort wakeup; the result is already persisted for action:"status" */
+    }
   })();
 
   return { status: "started", flowId: flow.flowId };

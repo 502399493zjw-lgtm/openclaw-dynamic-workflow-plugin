@@ -147,6 +147,12 @@ function inMemoryStore() {
   };
 }
 
+// Process-level fallback saved-store used only when managedFlows is unavailable
+// (degraded mode / unit ctx). MUST be module-scoped, not per-execute — otherwise
+// `save` writes to a fresh map that the next call's `run-saved` cannot see.
+// Still non-durable (lost on restart), but at least consistent within a process.
+const fallbackSavedStore = inMemoryStore();
+
 // ---------------------------------------------------------------------------
 // Canvas node resolution (§9.3 / §10.5). List connected nodes, pick the one
 // advertising a `canvas.*` command/cap. 0 matches → undefined (the surface
@@ -252,7 +258,9 @@ export function createWorkflowTool() {
       const savedBoundFlows = managedFlows
         ? managedFlows.bindSession({ sessionKey: SAVED_OWNER_KEY })
         : undefined;
-      const savedBacking = savedBoundFlows ? createFlowStore(savedBoundFlows, SAVED_CONTROLLER) : inMemoryStore();
+      const savedBacking = savedBoundFlows
+        ? createFlowStore(savedBoundFlows, SAVED_CONTROLLER)
+        : fallbackSavedStore;
       const savedDeps: SavedStoreDeps = {
         save: async (id, def) => {
           const map = savedBacking.readMap();
@@ -340,7 +348,8 @@ export function createWorkflowTool() {
           progress(ctx, `running ${agentCount} agent(s) — ${e.label}`, "wf:agents");
         } else if (e.type === "log") {
           progress(ctx, e.message, "wf:log");
-        } else if (e.type === "agent:done" && e.status === "error" && e.error) {
+        } else if (e.type === "agent:done" && e.error) {
+          // Any non-ok done event carrying a reason (error OR timeout) — collect it.
           spawnErrors.push(`${e.label}: ${e.error}`);
         }
         // Push the latest phase tree to the canvas (no-op when headless).
@@ -353,19 +362,23 @@ export function createWorkflowTool() {
       // chat.history adapter the live tests prove.
       const gw = (ctx.api as { config?: { gateway?: { port?: number; auth?: { token?: string } } } }).config
         ?.gateway;
-      const selfSubagent = createGatewaySubagent({
-        url: `ws://127.0.0.1:${gw?.port ?? 18789}`,
-        token: gw?.auth?.token,
-        idempotencyPrefix: `wf-${ctx.toolCallId}`,
-      });
       // Wait for each spawned sub-agent at least as long as the gateway's own
       // per-agent run budget — otherwise a slow sub-agent (e.g. many web fetches)
       // is abandoned early and falsely reported as a timeout (it has up to this
       // budget to finish). Mirror agents.defaults.timeoutSeconds (default 600s) + margin.
+      // This MUST also be the gateway-client RPC deadline (requestTimeoutMs below): the
+      // self-connecting "agent" call blocks (expectFinal) for the whole child run, so a
+      // short default RPC timeout would kill a long child before agent.wait ever matters.
       const agentBudgetSec =
         (ctx.api as { config?: { agents?: { defaults?: { timeoutSeconds?: number } } } }).config?.agents
           ?.defaults?.timeoutSeconds ?? 600;
       const spawnTimeoutMs = Math.max(120_000, agentBudgetSec * 1000 + 30_000);
+      const selfSubagent = createGatewaySubagent({
+        url: `ws://127.0.0.1:${gw?.port ?? 18789}`,
+        token: gw?.auth?.token,
+        idempotencyPrefix: `wf-${ctx.toolCallId}`,
+        requestTimeoutMs: spawnTimeoutMs,
+      });
       const run = (): Promise<unknown> =>
         runWorkflow({
           script,
@@ -379,6 +392,14 @@ export function createWorkflowTool() {
           journal,
         });
 
+      // When a script yields no usable result BUT sub-agents failed, replace the bare
+      // `null` with the collected reasons. Applied to BOTH the inline return and the
+      // detached persisted result, so an action:"status" poll also gets the reason.
+      const finalize = (value: unknown): unknown =>
+        (value === null || value === undefined) && spawnErrors.length > 0
+          ? { result: null, error: `sub-agent(s) failed — ${spawnErrors.join("; ")}` }
+          : value;
+
       // §3.4: detached path — return "started" immediately + a flowId the caller
       // polls with action:"status". The flow binds DETACHED_OWNER_KEY (stable) so the
       // later poll resolves it. We still pass scheduleSessionTurn as a best-effort
@@ -390,7 +411,7 @@ export function createWorkflowTool() {
           managedFlows: detachedBoundFlows,
           scheduleSessionTurn,
           sessionKey: baseSessionKey,
-          run: async () => (await run()) as JsonValue,
+          run: async () => finalize(await run()) as JsonValue,
         });
         return {
           content: [
@@ -409,13 +430,7 @@ export function createWorkflowTool() {
       const result = await run();
       await canvas.flush();
       progress(ctx, `done — ${agentCount} agent(s)`, "wf:done");
-      // If the script produced no usable result BUT sub-agents failed, return the
-      // reasons instead of a bare `null` — otherwise the caller sees only `null`
-      // and cannot diagnose (e.g. a rejected per-call model override).
-      if ((result === null || result === undefined) && spawnErrors.length > 0) {
-        return { result: null, error: `sub-agent(s) failed — ${spawnErrors.join("; ")}` };
-      }
-      return result;
+      return finalize(result);
     },
   };
 }

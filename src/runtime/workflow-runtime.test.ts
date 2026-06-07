@@ -156,6 +156,19 @@ describe("runWorkflow", () => {
     expect(result).toBe("reply:a");
   });
 
+  it("propagates the gateway failure reason on a no-text spawn (agent:done.error)", async () => {
+    const fake = fakeSubagent();
+    fake.rt.waitForRun = async () => ({ status: "error", error: "billing error: key out of credits" });
+    fake.rt.getSessionMessages = async () => ({ messages: [] }); // errored, no assistant text
+    const events: WorkflowEvent[] = [];
+    const result = await runWorkflow(
+      base({ script: `return await agent("a");`, subagent: fake.rt, onEvent: (e) => events.push(e) }),
+    );
+    expect(result).toBeNull();
+    const done = events.find((e) => e.type === "agent:done") as { error?: string } | undefined;
+    expect(done?.error).toContain("billing error");
+  });
+
   it("exposes args; budget hard-ceiling stops new spawns", async () => {
     const r1 = await runWorkflow(base({ script: `return args.map(n => n*2);`, args: [1, 2, 3] }));
     expect(r1).toEqual([2, 4, 6]);
