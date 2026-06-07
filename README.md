@@ -62,11 +62,12 @@ The `workflow` tool accepts:
 
 | param | type | meaning |
 | --- | --- | --- |
-| `action` | `"run"` \| `"save"` \| `"run-saved"` | default `"run"` |
+| `action` | `"run"` \| `"save"` \| `"run-saved"` \| `"list"` | default `"run"` |
 | `script` | string | the orchestration script body (required for `run`/`save`) |
 | `args` | any | input data exposed to the script as the global `args` |
 | `id` | string | saved-workflow id (for `save` / `run-saved`) |
 | `name` | string | human label (for `save`) |
+| `description` | string | one-line summary of a saved workflow (for `save`; surfaced by `list`) |
 
 ## Writing a workflow script
 
@@ -137,7 +138,8 @@ observability hook, not part of the result path.
 
 ## Save & resume
 
-- `action: "save"` stores a script under an `id`; `action: "run-saved"` replays it with fresh `args`. Saved defs persist in an OpenClaw managed-flow store.
+- `action: "save"` stores a script under an `id` (with an optional `name` + `description`); `action: "run-saved"` replays it with fresh `args`. Saved defs persist in an OpenClaw managed-flow store.
+- `action: "list"` returns every saved workflow as `{ id, name, description }` — this is the agent's **discovery** surface: it can `list` to see what exists, then `run-saved` by id, instead of having to already know the id.
 - A **resume journal** (keyed by script + args + call-site) lets a re-run reuse already-completed sub-agent results instead of re-spawning them.
 
 ## Security model

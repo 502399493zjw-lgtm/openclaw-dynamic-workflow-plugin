@@ -1,12 +1,17 @@
+export type SavedWorkflowDef = { name: string; script: string; description?: string };
+export type SavedWorkflowSummary = { id: string; name: string; description?: string };
 export type SavedStoreDeps = {
-  save: (id: string, def: { name: string; script: string }) => Promise<void>;
-  load: (id: string) => Promise<{ name: string; script: string } | undefined>;
+  save: (id: string, def: SavedWorkflowDef) => Promise<void>;
+  load: (id: string) => Promise<SavedWorkflowDef | undefined>;
+  // Enumerate saved workflows (id + name + optional description) so the agent can
+  // DISCOVER what is saved instead of having to already know an id.
+  list: () => Promise<SavedWorkflowSummary[]>;
 };
 export type WorkflowActionParams = {
-  // "status" is handled upstream in the tool (detached-flow poll) and never reaches
-  // resolveWorkflowAction; it is listed here only so the shared param type matches.
-  action?: "run" | "save" | "run-saved" | "status";
-  script?: string; args?: unknown; id?: string; name?: string;
+  // "status" and "list" are handled upstream in the tool and never reach
+  // resolveWorkflowAction; listed here only so the shared param type matches.
+  action?: "run" | "save" | "run-saved" | "status" | "list";
+  script?: string; args?: unknown; id?: string; name?: string; description?: string;
 };
 export type ResolvedAction =
   | { kind: "run"; script: string; args: unknown }
@@ -16,7 +21,7 @@ export async function resolveWorkflowAction(p: WorkflowActionParams, deps: Saved
   const action = p.action ?? "run";
   if (action === "save") {
     if (!p.id || !p.script) throw new Error("save requires id + script");
-    await deps.save(p.id, { name: p.name ?? p.id, script: p.script });
+    await deps.save(p.id, { name: p.name ?? p.id, script: p.script, description: p.description });
     return { kind: "saved", id: p.id };
   }
   if (action === "run-saved") {

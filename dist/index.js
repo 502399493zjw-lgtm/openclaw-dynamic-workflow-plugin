@@ -8708,7 +8708,7 @@ async function resolveWorkflowAction(p, deps) {
   const action = p.action ?? "run";
   if (action === "save") {
     if (!p.id || !p.script) throw new Error("save requires id + script");
-    await deps.save(p.id, { name: p.name ?? p.id, script: p.script });
+    await deps.save(p.id, { name: p.name ?? p.id, script: p.script, description: p.description });
     return { kind: "saved", id: p.id };
   }
   if (action === "run-saved") {
@@ -9013,14 +9013,20 @@ function createWorkflowTool() {
   return {
     name: "workflow",
     label: "Dynamic Workflow",
-    description: "Execute a dynamic workflow: a JS orchestration script using agent()/parallel()/pipeline()/phase()/log() that fans out sub-agents and returns one coordinated result. Supports action=run|save|run-saved.",
+    description: "Execute a dynamic workflow: a JS orchestration script using agent()/parallel()/pipeline()/phase()/log() that fans out sub-agents and returns one coordinated result. Supports action=run|save|run-saved|list (call action='list' first to discover saved workflows, then run-saved by id).",
     parameters: typebox_exports.Object({
       // Discriminated action (Plan #3 §3.6). Default "run".
       action: typebox_exports.Optional(
         typebox_exports.Union(
-          [typebox_exports.Literal("run"), typebox_exports.Literal("save"), typebox_exports.Literal("run-saved"), typebox_exports.Literal("status")],
+          [
+            typebox_exports.Literal("run"),
+            typebox_exports.Literal("save"),
+            typebox_exports.Literal("run-saved"),
+            typebox_exports.Literal("status"),
+            typebox_exports.Literal("list")
+          ],
           {
-            description: "run (default) | save a script under id | run-saved by id | status of a detached run by id (its flowId)."
+            description: "run (default) | save a script under id | run-saved by id | list all saved workflows (id+name+description, for discovery) | status of a detached run by id (its flowId)."
           }
         )
       ),
@@ -9031,7 +9037,12 @@ function createWorkflowTool() {
       ),
       args: typebox_exports.Optional(typebox_exports.Any()),
       id: typebox_exports.Optional(typebox_exports.String({ description: "Saved-workflow id (required for save/run-saved)." })),
-      name: typebox_exports.Optional(typebox_exports.String({ description: "Human label for a saved workflow (save only)." }))
+      name: typebox_exports.Optional(typebox_exports.String({ description: "Human label for a saved workflow (save only)." })),
+      description: typebox_exports.Optional(
+        typebox_exports.String({
+          description: "One-line summary of what a saved workflow does (save only); surfaced by action='list'."
+        })
+      )
     }),
     execute: async (params, _config, ctx) => {
       const api = ctx.api;
@@ -9053,11 +9064,32 @@ function createWorkflowTool() {
           if (def && typeof def === "object" && !Array.isArray(def)) {
             const rec = def;
             if (typeof rec.script === "string") {
-              return { name: typeof rec.name === "string" ? rec.name : id, script: rec.script };
+              return {
+                name: typeof rec.name === "string" ? rec.name : id,
+                script: rec.script,
+                ...typeof rec.description === "string" ? { description: rec.description } : {}
+              };
             }
           }
           return void 0;
-        }
+        },
+        // §10.1: the entire saved set lives in one managedFlow stateJson map, so a
+        // list is just its entries — this is the agent's DISCOVERY surface.
+        list: async () => Object.entries(savedBacking.readMap()).flatMap(([id, def]) => {
+          if (def && typeof def === "object" && !Array.isArray(def)) {
+            const rec = def;
+            if (typeof rec.script === "string") {
+              return [
+                {
+                  id,
+                  name: typeof rec.name === "string" ? rec.name : id,
+                  ...typeof rec.description === "string" ? { description: rec.description } : {}
+                }
+              ];
+            }
+          }
+          return [];
+        })
       };
       const detachedBoundFlows = managedFlows ? managedFlows.bindSession({ sessionKey: DETACHED_OWNER_KEY }) : void 0;
       if (params.action === "status") {
@@ -9066,6 +9098,9 @@ function createWorkflowTool() {
         if (!rec) return { status: "not_found", id: params.id };
         const state = rec.stateJson ?? {};
         return { id: params.id, status: state.status ?? "running", result: state.result, error: state.error };
+      }
+      if (params.action === "list") {
+        return { workflows: await savedDeps.list() };
       }
       const resolved = await resolveWorkflowAction(params, savedDeps);
       if (resolved.kind === "saved") {

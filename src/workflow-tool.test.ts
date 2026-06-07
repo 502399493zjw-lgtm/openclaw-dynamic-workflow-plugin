@@ -116,6 +116,27 @@ describe("workflow tool", () => {
     }
   });
 
+  it("action=save records name+description; action=list lets the agent discover saved workflows", async () => {
+    const tool = createWorkflowTool();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctx = { api: { config: { gateway: { port: 18790, auth: { token: "t" } } } }, toolCallId: "save-1" } as any;
+    await tool.execute(
+      { action: "save", id: "audit-routes", name: "Route auth audit", description: "scan every route for missing auth", script: `return 1;` },
+      {},
+      ctx,
+    );
+    // A fresh call (new toolCallId) must still see it — proves discovery is not tied
+    // to the saving call's session (the module-scoped fallback store stands in for the
+    // durable managedFlows store here).
+    const listed = await tool.execute({ action: "list" }, {}, { ...ctx, toolCallId: "list-1" });
+    const saved = (listed as { workflows: Array<{ id: string; name: string; description?: string }> }).workflows;
+    expect(saved.find((s) => s.id === "audit-routes")).toMatchObject({
+      id: "audit-routes",
+      name: "Route auth audit",
+      description: "scan every route for missing auth",
+    });
+  });
+
   it("exposes the tool's static metadata", () => {
     const tool = createWorkflowTool();
     expect(tool.name).toBe("workflow");

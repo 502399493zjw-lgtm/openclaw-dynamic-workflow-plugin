@@ -211,15 +211,21 @@ export function createWorkflowTool() {
     name: "workflow",
     label: "Dynamic Workflow",
     description:
-      "Execute a dynamic workflow: a JS orchestration script using agent()/parallel()/pipeline()/phase()/log() that fans out sub-agents and returns one coordinated result. Supports action=run|save|run-saved.",
+      "Execute a dynamic workflow: a JS orchestration script using agent()/parallel()/pipeline()/phase()/log() that fans out sub-agents and returns one coordinated result. Supports action=run|save|run-saved|list (call action='list' first to discover saved workflows, then run-saved by id).",
     parameters: Type.Object({
       // Discriminated action (Plan #3 §3.6). Default "run".
       action: Type.Optional(
         Type.Union(
-          [Type.Literal("run"), Type.Literal("save"), Type.Literal("run-saved"), Type.Literal("status")],
+          [
+            Type.Literal("run"),
+            Type.Literal("save"),
+            Type.Literal("run-saved"),
+            Type.Literal("status"),
+            Type.Literal("list"),
+          ],
           {
             description:
-              "run (default) | save a script under id | run-saved by id | status of a detached run by id (its flowId).",
+              "run (default) | save a script under id | run-saved by id | list all saved workflows (id+name+description, for discovery) | status of a detached run by id (its flowId).",
           },
         ),
       ),
@@ -241,14 +247,20 @@ export function createWorkflowTool() {
       args: Type.Optional(Type.Any()),
       id: Type.Optional(Type.String({ description: "Saved-workflow id (required for save/run-saved)." })),
       name: Type.Optional(Type.String({ description: "Human label for a saved workflow (save only)." })),
+      description: Type.Optional(
+        Type.String({
+          description: "One-line summary of what a saved workflow does (save only); surfaced by action='list'.",
+        }),
+      ),
     }),
     execute: async (
       params: {
-        action?: "run" | "save" | "run-saved" | "status";
+        action?: "run" | "save" | "run-saved" | "status" | "list";
         script?: string;
         args?: unknown;
         id?: string;
         name?: string;
+        description?: string;
       },
       _config: unknown,
       ctx: ToolPluginExecutionContext,
@@ -294,13 +306,35 @@ export function createWorkflowTool() {
         load: async (id) => {
           const def = savedBacking.readMap()[id];
           if (def && typeof def === "object" && !Array.isArray(def)) {
-            const rec = def as { name?: unknown; script?: unknown };
+            const rec = def as { name?: unknown; script?: unknown; description?: unknown };
             if (typeof rec.script === "string") {
-              return { name: typeof rec.name === "string" ? rec.name : id, script: rec.script };
+              return {
+                name: typeof rec.name === "string" ? rec.name : id,
+                script: rec.script,
+                ...(typeof rec.description === "string" ? { description: rec.description } : {}),
+              };
             }
           }
           return undefined;
         },
+        // §10.1: the entire saved set lives in one managedFlow stateJson map, so a
+        // list is just its entries — this is the agent's DISCOVERY surface.
+        list: async () =>
+          Object.entries(savedBacking.readMap()).flatMap(([id, def]) => {
+            if (def && typeof def === "object" && !Array.isArray(def)) {
+              const rec = def as { name?: unknown; description?: unknown; script?: unknown };
+              if (typeof rec.script === "string") {
+                return [
+                  {
+                    id,
+                    name: typeof rec.name === "string" ? rec.name : id,
+                    ...(typeof rec.description === "string" ? { description: rec.description } : {}),
+                  },
+                ];
+              }
+            }
+            return [];
+          }),
       };
 
       // Detached run flows bind to the stable DETACHED_OWNER_KEY (see constant) so
@@ -319,6 +353,12 @@ export function createWorkflowTool() {
         if (!rec) return { status: "not_found", id: params.id };
         const state = (rec.stateJson ?? {}) as { status?: string; result?: unknown; error?: unknown };
         return { id: params.id, status: state.status ?? "running", result: state.result, error: state.error };
+      }
+
+      // action:"list" → enumerate saved workflows so the agent can DISCOVER what is
+      // available (id + name + optional description) and then run-saved one by id.
+      if (params.action === "list") {
+        return { workflows: await savedDeps.list() };
       }
 
       // §3.6: resolve the action. save → return immediately; run/run-saved →
