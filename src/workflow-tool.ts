@@ -201,7 +201,9 @@ export function createWorkflowTool() {
           description:
             "JS orchestration script body (async; no imports; top-level await ok; end with `return <result>`). " +
             "Injected primitives: " +
-            "agent(prompt: string, opts?: {schema?, label?, model?, agent?}): Promise<string|object> — spawn one sub-agent; " +
+            "agent(prompt: string, opts?: {schema?, label?, agent?}): Promise<string|object> — spawn one sub-agent " +
+            "(opts.agent routes to a named agent from agents.list — that is how you pick a different model/tools/persona; " +
+            "per-call model overrides are NOT supported); " +
             "parallel(...thunks) or parallel([thunks]): Promise<any[]> — run thunks (e.g. () => agent('x')) concurrently; " +
             "pipeline(items: any[], ...stages): Promise<any[]> — run each item through the stage fns; " +
             "phase(name: string) and log(msg: string) for progress. Also: args (the passed args value). " +
@@ -326,6 +328,9 @@ export function createWorkflowTool() {
       });
 
       let agentCount = 0;
+      // Collect sub-agent failure reasons so a workflow that ends up `null` can
+      // explain WHY (progress events alone don't reach the calling agent's view).
+      const spawnErrors: string[] = [];
       const onEvent = (e: WorkflowEvent): void => {
         canvas.onEvent(e);
         if (e.type === "phase") {
@@ -335,6 +340,8 @@ export function createWorkflowTool() {
           progress(ctx, `running ${agentCount} agent(s) — ${e.label}`, "wf:agents");
         } else if (e.type === "log") {
           progress(ctx, e.message, "wf:log");
+        } else if (e.type === "agent:done" && e.status === "error" && e.error) {
+          spawnErrors.push(`${e.label}: ${e.error}`);
         }
         // Push the latest phase tree to the canvas (no-op when headless).
         void canvas.flush();
@@ -393,6 +400,12 @@ export function createWorkflowTool() {
       const result = await run();
       await canvas.flush();
       progress(ctx, `done — ${agentCount} agent(s)`, "wf:done");
+      // If the script produced no usable result BUT sub-agents failed, return the
+      // reasons instead of a bare `null` — otherwise the caller sees only `null`
+      // and cannot diagnose (e.g. a rejected per-call model override).
+      if ((result === null || result === undefined) && spawnErrors.length > 0) {
+        return { result: null, error: `sub-agent(s) failed — ${spawnErrors.join("; ")}` };
+      }
       return result;
     },
   };

@@ -8,7 +8,7 @@ import { spawnAwaitCollect, type SubagentRuntime } from "../skeleton/spawn-bridg
 export type WorkflowEvent =
   | { type: "phase"; name: string }
   | { type: "agent:start"; phase: string; label: string; seq: number }
-  | { type: "agent:done"; phase: string; label: string; seq: number; status: string }
+  | { type: "agent:done"; phase: string; label: string; seq: number; status: string; error?: string }
   | { type: "log"; phase: string; message: string };
 
 /**
@@ -129,12 +129,25 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
           return value;
         }
         const r = await runOnce();
+        if (r.status !== "ok") {
+          // Don't swallow a non-ok spawn silently — the user sees only `null`
+          // otherwise and cannot tell why (e.g. a rejected model override).
+          emit({ type: "log", phase: myPhase, message: `agent ${label} did not complete (${r.status})` });
+        }
         const output = r.status === "ok" ? r.output : null;
         await record(output);
         emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: r.status });
         return output;
-      } catch {
-        emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: "error" });
+      } catch (err) {
+        // A thrown spawn error (e.g. the gateway rejecting a per-call model/provider
+        // override) was previously swallowed into a bare `null`. Surface the reason
+        // via a log event + the agent:done error field so it reaches the user.
+        const reason = err instanceof Error ? err.message : String(err);
+        const hint = /overrides are not authorized/i.test(reason)
+          ? " — per-call model/provider override needs operator.admin; define a named agent in agents.list and use agent(prompt, { agent: 'id' }) instead"
+          : "";
+        emit({ type: "log", phase: myPhase, message: `agent ${label} failed: ${reason}${hint}` });
+        emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: "error", error: reason + hint });
         return null;
       }
     });
