@@ -32,21 +32,27 @@ You → your OpenClaw assistant: "use a workflow to audit every route for missin
 
 ## Install
 
-```bash
-# from ClawHub (or: npm:openclaw-plugin-workflows, or a local checkout)
-openclaw plugins install clawhub:openclaw-plugin-workflows
-openclaw gateway restart
-openclaw plugins inspect workflows   # confirm Status: loaded
-```
-
-Local development install:
+The repo ships a prebuilt, self-contained `dist/` (typebox bundled in; `openclaw` is a
+linked peer), so **no build or `npm install` is needed to use it** — clone and install
+from the local path. (`openclaw plugins install <git-url>` is not accepted by openclaw
+2026.6.1, so clone first.)
 
 ```bash
-git clone <this repo> && cd openclaw-plugin-workflows
-pnpm install && pnpm build
-openclaw plugins install --link "$PWD"
+git clone https://github.com/502399493zjw-lgtm/openclaw-dynamic-workflow-plugin.git
+openclaw plugins install ./openclaw-dynamic-workflow-plugin --force
 openclaw gateway restart
+openclaw plugins inspect workflows   # confirm Status: enabled
 ```
+
+**Update to a newer version:**
+
+```bash
+cd openclaw-dynamic-workflow-plugin && git pull
+openclaw plugins install . --force && openclaw gateway restart
+```
+
+**Working on the plugin itself** (editing source): `pnpm install && pnpm build` rebuilds
+`dist/` (esbuild bundle); commit the rebuilt `dist/` so installs stay build-free.
 
 ## Using it
 
