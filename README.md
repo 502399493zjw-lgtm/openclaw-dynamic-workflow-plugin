@@ -111,6 +111,30 @@ See **[docs/examples.md](docs/examples.md)** for more (pipeline, structured `sch
 - **Canvas phase-tree panel**: when a Canvas-capable node is paired, a live phase→agent tree renders via `canvas.a2ui.pushJSONL`.
 - **Approval gate**: the run is held until you approve (shows the planned script).
 
+## Watching sub-agents live
+
+The interesting work happens *inside* the script — dozens of sub-agents the main chat never
+shows you. Set **`OPENCLAW_WORKFLOWS_TRACE=1`** (or a file path) on the process that runs
+workflows — the **gateway** for `openclaw agent` / remote `tui`, or your **shell** for
+`openclaw chat --local` — and each run appends JSONL events (`run:start`; `agent:start` with
+the prompt preview + first-response timeout; `agent:done` with status + duration; `run:done`)
+to `$OPENCLAW_HOME/workflow-trace.jsonl`. Tail it in a second terminal with the bundled
+monitor:
+
+```
+$ node scripts/wf-monitor.mjs
+
+🧩 workflow run · started 19:08:28
+  ▶ #1 scan-auth   ⏱120s  "Does routes/admin.ts have a missing auth check?…"
+  ▶ #2 scan-pay    ⏱120s  "Does routes/pay.ts have a missing auth check?…"
+  ✓ #2 scan-pay    done (5s)
+  ✗ #1 scan-auth   timeout (120s) — first-response window exceeded
+  ── run complete ──
+```
+
+The trace is **opt-in and side-effect-free** — no env var, nothing written. It's an
+observability hook, not part of the result path.
+
 ## Save & resume
 
 - `action: "save"` stores a script under an `id`; `action: "run-saved"` replays it with fresh `args`. Saved defs persist in an OpenClaw managed-flow store.
@@ -147,6 +171,35 @@ isolate (`isolated-vm`) or a sandboxed subprocess. See `docs/superpowers/plans/a
   surface, with an inline + in-memory fallback when it isn't present.
 - Requires `2026.6.1+`; will not load on older end-user builds.
 
+## How it got here (iteration log)
+
+Built spec-first, then hardened against a **real** `openclaw@2026.6.1` gateway — every fix
+below came from something breaking in a live run, not a guess. Roughly in order:
+
+**Foundation (spec → spine → runtime).** Design + acceptance rubric first; then the
+`agent()` spine (spawn → await → collect) proven end-to-end with a real `PONG`; then the core
+runtime (`parallel`/`pipeline`/`phase`/`log`/`budget`) with a live parallel fan-out collecting
+every result; then the surfaces (Canvas tree, approval gate, detached, resume journal,
+save/run-saved) and per-agent `{ model, agent, schema }` options.
+
+Then real-gateway testing surfaced — and fixed — a series of issues:
+
+| # | What broke in a live run | Fix |
+| --- | --- | --- |
+| §13 | `api.runtime.subagent` isn't reachable from *inside* the gateway, so `agent()` spawned nothing | Spawn via a **self-connecting `GatewayClient`** (`callGatewayFromCli` → `agent`/`agent.wait`/`chat.history`) |
+| save | Saved workflows were keyed to the per-call session and vanished on restart | Rebind the store to a **stable owner key** → `save` survives `gateway restart` → `run-saved` |
+| author | Agent-written scripts tripped on `parallel(a, b)` vs `parallel([a, b])` | `parallel()` accepts **varargs or an array**; primitives documented so the authoring agent gets it right unaided |
+| detached | `scheduleSessionTurn` (push "finished") is trust-gated to bundled plugins — a no-op for an external one | Detached returns a `flowId`; result is **pulled** via `action:"status"` |
+| null | A failed sub-agent collapsed to a bare `null` — even nested `{a:null,b:null}` — with no reason | **Surface the failure reason** at every shape; keep partial text on a non-ok status instead of discarding it |
+| **timeout** | **Multi-minute research sub-agents kept returning `null`** — the recurring saga | Root cause: OpenClaw's SDK default **10s RPC first-response timeout**. Fixed: **120s default** first-response window + per-agent **`{ timeout }`** (seconds). This is the fix that made real research work. |
+| security | The `node:vm` "sandbox" was implied to be a boundary; it isn't (a host `Function` is reachable) | **Honest model (Option A):** document vm = speed-bump; the real controls are a trusted authoring agent + the approval gate — same as Claude Code |
+| review | A `codex` review pass; one suggested RPC-deadline change actually **broke spawns** | Kept the error-observability hardening; **caught the bad change with a live smoke test and reverted it** |
+| watch | No way to see the sub-agents executing mid-run | Env-gated **structured trace** + a terminal **monitor** (prompt preview, ⏱timeout, ✓/✗ + duration) — see [Watching sub-agents live](#watching-sub-agents-live) |
+| dist | `openclaw 2026.6.1` rejects git-URL installs and doesn't build plugins on install | Ship a **committed self-contained esbuild bundle** (typebox inlined, `openclaw` external) + **clone-and-local-path** install |
+
+The full SDK-contract findings behind each row live in `docs/superpowers/plans/api-findings.md`
+(§13–§16).
+
 ## Development
 
 ```bash
@@ -164,4 +217,4 @@ Design, acceptance rubric, and the verified SDK contract notes live in **[`docs/
 
 ## License
 
-TBD — choose a license before publishing.
+MIT — see [LICENSE](LICENSE).
