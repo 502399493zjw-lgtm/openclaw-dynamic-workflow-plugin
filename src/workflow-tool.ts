@@ -362,23 +362,19 @@ export function createWorkflowTool() {
       // chat.history adapter the live tests prove.
       const gw = (ctx.api as { config?: { gateway?: { port?: number; auth?: { token?: string } } } }).config
         ?.gateway;
-      // Wait for each spawned sub-agent at least as long as the gateway's own
-      // per-agent run budget — otherwise a slow sub-agent (e.g. many web fetches)
-      // is abandoned early and falsely reported as a timeout (it has up to this
-      // budget to finish). Mirror agents.defaults.timeoutSeconds (default 600s) + margin.
-      // This MUST also be the gateway-client RPC deadline (requestTimeoutMs below): the
-      // self-connecting "agent" call blocks (expectFinal) for the whole child run, so a
-      // short default RPC timeout would kill a long child before agent.wait ever matters.
-      const agentBudgetSec =
-        (ctx.api as { config?: { agents?: { defaults?: { timeoutSeconds?: number } } } }).config?.agents
-          ?.defaults?.timeoutSeconds ?? 600;
-      const spawnTimeoutMs = Math.max(120_000, agentBudgetSec * 1000 + 30_000);
       const selfSubagent = createGatewaySubagent({
         url: `ws://127.0.0.1:${gw?.port ?? 18789}`,
         token: gw?.auth?.token,
         idempotencyPrefix: `wf-${ctx.toolCallId}`,
-        requestTimeoutMs: spawnTimeoutMs,
       });
+      // Our agent.wait poll budget: at least the gateway's per-agent run budget so a
+      // slow sub-agent isn't abandoned by our wait. (The real long-poll is the
+      // expectFinal "agent" call, which has NO client deadline — see gateway-subagent;
+      // setting one there triggers a 10s timeout that kills even fast spawns.)
+      const agentBudgetSec =
+        (ctx.api as { config?: { agents?: { defaults?: { timeoutSeconds?: number } } } }).config?.agents
+          ?.defaults?.timeoutSeconds ?? 600;
+      const spawnTimeoutMs = Math.max(120_000, agentBudgetSec * 1000 + 30_000);
       const run = (): Promise<unknown> =>
         runWorkflow({
           script,
