@@ -17,4 +17,11 @@ describe("validateScript", () => {
     expect(validateScript(`process.exit(1);`).ok).toBe(false);
     expect(validateScript(`globalThis.fetch("http://x");`).ok).toBe(false);
   });
+
+  it("speed-bumps prototype-chain escapes (constructor/Function/computed) — not a boundary", () => {
+    expect(validateScript(`return agent.constructor.constructor("return process")();`).ok).toBe(false);
+    expect(validateScript(`return agent.constructor("return this")();`).ok).toBe(false);
+    expect(validateScript(`return agent["constructor"]("x");`).ok).toBe(false);
+    expect(validateScript(`return Function("return 1")();`).ok).toBe(false);
+  });
 });

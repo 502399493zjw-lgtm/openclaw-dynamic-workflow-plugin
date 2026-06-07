@@ -1019,3 +1019,39 @@ REMAINING HONEST GAPS:
   external plugins, or expose caller origin to tool execute). Until then PULL/status is the
   contract. Documented, not worked around.
 - Canvas (needs a paired UI node) and the human approval hook remain headless-blocked.
+
+### §16 — sandbox threat model + the security decision (2026-06-07)
+
+A codex review flagged two real properties of the script sandbox; both were verified:
+- node:vm is NOT a security boundary. `agent.constructor.constructor("return process")()`
+  reaches host `process` (and `process.env`, `require`, child_process → RCE) despite
+  `codeGeneration:{strings:false}`, because the injected primitives are host-realm
+  functions whose `.constructor` is the host `Function`. The validate-script regex
+  catches the literal forms but is bypassable (`agent.constructor("return this")()`,
+  string-splitting, computed access) — also verified.
+- The vm `timeout` only bounds SYNCHRONOUS evaluation. After `await agent(...)`, the
+  continuation runs outside it, so `await agent("x"); while(true){}` can pin the loop.
+Neither is fixable in-process: JS has no preemption, and vm host-function leaks are
+whack-a-mole. A real fix needs a true isolate (isolated-vm) or a sandboxed subprocess
+that can be terminated — both meaningful rework.
+
+DECISION (user, 2026-06-07): Option A — accept the in-process model, matching Claude
+Code's workflow tool. The difference between this plugin and Claude Code is the
+DEPLOYMENT CONTEXT, not the mechanism: Claude Code is a local single-user dev CLI (you
+already have shell — escaping the "sandbox" is no escalation), while this gateway is a
+persistent server that CAN hold secrets and be reached by external channels. For a
+PERSONAL, single-user, local gateway the two are equivalent: the real protection in
+both is (1) a trusted/aligned authoring agent and (2) human-in-the-loop approval — NOT
+the sandbox. The shared/exposed-gateway case (untrusted authors, auto-run on untrusted
+content) is the only one that needs real isolation; deferred until/if this is deployed
+that way.
+
+What Option A means in the code:
+- sandbox.ts + validate-script.ts now state honestly that the vm is a speed-bump, not a
+  boundary; validate-script adds constructor/Function/eval/__proto__ patterns as extra
+  speed-bumps (documented as bypassable).
+- The before_tool_call approval gate (src/index.ts) is the documented security control,
+  default ON. OPENCLAW_WORKFLOWS_SKIP_APPROVAL=1 removes it for trusted automation only.
+- FUTURE (only if deployed shared/exposed): move the engine into an isolated-vm isolate
+  or a sandboxed subprocess with IPC for agent() calls — this also fixes the async-loop
+  watchdog (#2) since the isolate/subprocess can be force-terminated.

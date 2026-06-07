@@ -6,8 +6,18 @@ export async function runScript(opts: {
   args: unknown;
   budget: unknown;
 }): Promise<unknown> {
-  // The sandbox context contains ONLY the injected primitives + args/budget.
-  // No require, process, globalThis host, fs, or net is reachable.
+  // SECURITY MODEL — READ THIS. node:vm is NOT a security boundary (Node's own docs
+  // say so; verified here: `agent.constructor.constructor("return process")()` reaches
+  // host `process` despite codeGeneration:false, because the injected primitives are
+  // host-realm functions whose constructor is the host Function). This context only
+  // removes the AMBIENT host globals (require/process/fs aren't in scope), which stops
+  // ACCIDENTAL host access and is a speed-bump against naive escapes — nothing more.
+  // The REAL controls (same model as Claude Code's workflow tool) are: (1) the script
+  // is authored by a trusted, aligned agent, and (2) the before_tool_call approval gate
+  // (src/index.ts) puts a human in the loop per run. Do NOT rely on this vm to contain a
+  // hostile script. If this plugin is ever deployed multi-user or exposed to untrusted
+  // script authors, replace this with a real isolate (isolated-vm) or a sandboxed
+  // subprocess — see docs/superpowers/plans/api-findings.md §16.
   const sandbox: Record<string, unknown> = {
     ...opts.primitives,
     args: opts.args,

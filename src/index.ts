@@ -34,9 +34,15 @@ const entry = defineToolPlugin({
 const registerTools = entry.register;
 entry.register = (api: OpenClawPluginApi): void => {
   registerTools(api);
-  // Headless/automated runs (live e2e, CI) set OPENCLAW_WORKFLOWS_SKIP_APPROVAL=1
-  // to skip the interactive approval gate — there is no human to resolve a
-  // requireApproval prompt out-of-band, so it would otherwise block the tool call.
+  // SECURITY CONTROL (default ON). This before_tool_call gate is the workflow plugin's
+  // primary safety mechanism — the node:vm sandbox is NOT a real boundary (see
+  // src/runtime/sandbox.ts), so a human-in-the-loop approval per run is what actually
+  // contains a mis-authored or prompt-injected script. Keep it ON for any gateway that
+  // reads untrusted content or is shared/exposed.
+  // OPENCLAW_WORKFLOWS_SKIP_APPROVAL=1 removes that human gate. It exists for headless
+  // automation (live e2e/CI) and trusted single-user setups where there is no human to
+  // resolve the prompt; setting it trades the safety control for convenience, so only
+  // use it on a machine + content you fully trust — never on a shared/exposed gateway.
   if (process.env.OPENCLAW_WORKFLOWS_SKIP_APPROVAL !== "1") {
     api.on("before_tool_call", workflowApprovalHandler as never);
   }
