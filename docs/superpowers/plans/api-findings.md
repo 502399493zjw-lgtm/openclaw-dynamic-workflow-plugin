@@ -969,3 +969,53 @@ KNOWN GAPS (honest):
 - Canvas surface (needs a paired UI node) and the before_tool_call approval hook (needs a
   human approver; only the SKIP env was exercised) are headless-blocked — not verifiable in
   this setup.
+
+### §15 — "execute the rest" round: #4a, #2, and detached completion (2026-06-07)
+
+Drove the isolated dev gateway (port 18790) to finish the remaining items. Backed by a
+parallel source-research workflow (3 agents over the cloned openclaw + dist).
+
+#4a — per-helper model via a named agent — RESOLVED + VERIFIED.
+Root cause of the earlier NULL (R2, high-confidence with citations): a named agent runs
+with its OWN agentDir (`<state>/agents/<id>/agent/`) and its own EMPTY auth store; with no
+moonshot credential there and no MOONSHOT_API_KEY/KIMI_API_KEY in env, the child throws
+`missing-provider-auth` AFTER the `agent` RPC already returned its ack — the spawner reads
+only runId, so it surfaces as NULL, not an error. Model routing itself is fine (per-agent
+`agents.list[].model` is honored). Fix: put MOONSHOT_API_KEY in the gateway env (env-backed
+auth discovery covers any agent). VERIFIED: `agent({agent:"auditor"})` now runs; the auditor
+session trajectory records `"model":"moonshot/kimi-k2.5"` (vs main = kimi-k2.6) — genuine
+per-helper model swap, empirically proven.
+
+#2 — a real agent authoring its own orchestration script (the "dynamic" part) — VERIFIED,
+with a fix. Never tested before. Drove kimi-k2.6 to author a workflow with NO script given.
+First attempt died: the agent naturally wrote `parallel(t1, t2)` (varargs) but the API only
+accepted `parallel([t1, t2])` → opaque "thunks.map is not a function". Fixed: parallel()
+now accepts varargs OR an array and throws an actionable error on a non-function; the tool's
+`script` param documents every primitive's signature. After the fix the agent authored a
+working script first-try and the workflow returned {"france":"Paris","japan":"Tokyo"}.
+
+A — detached completion — IMPLEMENTED via PULL (push is not available to us).
+Research finding (R1, high-confidence): the "gateway completion callback" that would push a
+detached result to the originating user session does NOT exist for an externally-installed
+plugin in 2026.6.1:
+  - managedFlows.finish()/fail() are pure store writes; the only transition hook
+    (`configureTaskFlowRegistryStore` observer) is registered ONLY in tests — no production
+    code delivers on a flow transition.
+  - Real terminal delivery (`maybeDeliverTaskTerminalUpdate`) fires only for TASK records
+    with a linked parentFlowId, not for a bare managed flow.
+  - scheduleSessionTurn is hard-gated to origin==="bundled" (no-op for us) — already noted
+    at §10.2; this is why the detached wakeup never produced a cron_jobs/delivery row.
+  - The tool execute() ctx exposes no caller sessionKey/deliveryContext; only the tool
+    FACTORY ctx (OpenClawPluginToolContext) carries them, which the SDK tool-plugin entry
+    does not pass to execute.
+So the robust, ungated path is PULL: detached flows bind a stable DETACHED_OWNER_KEY and a
+new `action:"status", id:<flowId>` reads the persisted stateJson. VERIFIED: a detached
+`return "PONGPULL"` persisted {status:done,result:PONGPULL}; the agent autonomously polled
+status from the tool's return instruction and retrieved PONGPULL; a separate status call
+(different toolCallId) returned {id, status:"done", result:"PONGPULL"}.
+
+REMAINING HONEST GAPS:
+- Push completion to the user session needs an OpenClaw change (ungate a delivery seam for
+  external plugins, or expose caller origin to tool execute). Until then PULL/status is the
+  contract. Documented, not worked around.
+- Canvas (needs a paired UI node) and the human approval hook remain headless-blocked.
