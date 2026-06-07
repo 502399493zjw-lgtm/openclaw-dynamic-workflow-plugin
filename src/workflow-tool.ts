@@ -189,7 +189,14 @@ export function createWorkflowTool() {
       ),
       script: Type.Optional(
         Type.String({
-          description: "JS orchestration script body (no imports; uses the injected primitives). Required for run/save.",
+          description:
+            "JS orchestration script body (async; no imports; top-level await ok; end with `return <result>`). " +
+            "Injected primitives: " +
+            "agent(prompt: string, opts?: {schema?, label?, model?, agent?}): Promise<string|object> — spawn one sub-agent; " +
+            "parallel(...thunks) or parallel([thunks]): Promise<any[]> — run thunks (e.g. () => agent('x')) concurrently; " +
+            "pipeline(items: any[], ...stages): Promise<any[]> — run each item through the stage fns; " +
+            "phase(name: string) and log(msg: string) for progress. Also: args (the passed args value). " +
+            "Required for run/save. Example: return await parallel(() => agent('a'), () => agent('b'));",
         }),
       ),
       args: Type.Optional(Type.Any()),

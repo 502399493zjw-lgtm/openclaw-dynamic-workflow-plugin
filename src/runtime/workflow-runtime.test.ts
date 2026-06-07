@@ -95,6 +95,19 @@ describe("runWorkflow", () => {
     expect(result).toEqual(["reply:a", "reply:b", "reply:c"]);
   });
 
+  it("parallel() also accepts varargs (LLM-natural parallel(t1, t2), not just an array)", async () => {
+    const result = await runWorkflow(
+      base({ script: `return await parallel(() => agent("a"), () => agent("b"));` }),
+    );
+    expect(result).toEqual(["reply:a", "reply:b"]);
+  });
+
+  it("parallel() throws an actionable error when given a non-function", async () => {
+    await expect(
+      runWorkflow(base({ script: `return await parallel(agent("a"));` })),
+    ).rejects.toThrow(/parallel\(\) expects thunks/);
+  });
+
   it("enforces the concurrency cap", async () => {
     const fake = fakeSubagent({ delayMs: () => 10 });
     const script = `return await parallel(Array.from({length: 12}, (_, i) => () => agent("t" + i)));`;

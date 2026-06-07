@@ -140,8 +140,22 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
     });
   };
 
-  const parallel = (thunks: Array<() => Promise<unknown>>): Promise<unknown[]> =>
-    Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+  // Accept BOTH parallel([t1, t2]) (single-array, Claude-Code style) AND
+  // parallel(t1, t2) (varargs). A real LLM authoring a script naturally reaches for
+  // varargs; the old array-only signature killed those runs with the opaque
+  // "thunks.map is not a function". Normalize, then validate with an actionable error.
+  const parallel = (...args: Array<unknown>): Promise<unknown[]> => {
+    const thunks = (args.length === 1 && Array.isArray(args[0]) ? args[0] : args) as Array<
+      () => Promise<unknown>
+    >;
+    if (!thunks.every((t) => typeof t === "function")) {
+      throw new TypeError(
+        "parallel() expects thunks (functions), e.g. parallel(() => agent('a'), () => agent('b')) " +
+          "or parallel([() => agent('a'), () => agent('b')]).",
+      );
+    }
+    return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+  };
 
   type Stage = (prev: unknown, item: unknown, index: number) => Promise<unknown>;
   const pipeline = (items: unknown[], ...stages: Stage[]): Promise<unknown[]> =>
