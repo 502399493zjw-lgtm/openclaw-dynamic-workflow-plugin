@@ -60,14 +60,14 @@ Just ask your assistant in natural language — "**use a workflow to …**", "**
 
 The `workflow` tool accepts:
 
-| param | type | meaning |
-| --- | --- | --- |
-| `action` | `"run"` \| `"save"` \| `"run-saved"` \| `"list"` | default `"run"` |
-| `script` | string | the orchestration script body (required for `run`/`save`) |
-| `args` | any | input data exposed to the script as the global `args` |
-| `id` | string | saved-workflow id (for `save` / `run-saved`) |
-| `name` | string | human label (for `save`) |
-| `description` | string | one-line summary of a saved workflow (for `save`; surfaced by `list`) |
+| param | type | required | meaning |
+| --- | --- | --- | --- |
+| `action` | `"run"` \| `"save"` \| `"run-saved"` \| `"list"` \| `"status"` | optional (default `"run"`) | **run** a script · **save** it under an id · **run-saved** by id · **list** saved workflows (the agent's discovery surface) · **status** of a detached run by id |
+| `script` | string | for `run` / `save` | the orchestration script body — see [Writing a workflow script](#writing-a-workflow-script) for the injected primitives |
+| `args` | any | optional | input data exposed to the script as the global `args`. Keep data out of the script string — pass it here and read it as `args.x`; with `run-saved` this replays a saved script against fresh inputs |
+| `id` | string | for `save` / `run-saved` / `status` | saved-workflow id (for `save`/`run-saved`), or the detached `flowId` (for `status`) |
+| `name` | string | optional (`save`) | human label for a saved workflow |
+| `description` | string | optional (`save`) | one-line summary of a saved workflow; surfaced by `list` so saved workflows are self-describing |
 
 ## Writing a workflow script
 
