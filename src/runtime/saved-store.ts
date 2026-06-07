@@ -3,7 +3,9 @@ export type SavedStoreDeps = {
   load: (id: string) => Promise<{ name: string; script: string } | undefined>;
 };
 export type WorkflowActionParams = {
-  action?: "run" | "save" | "run-saved";
+  // "status" is handled upstream in the tool (detached-flow poll) and never reaches
+  // resolveWorkflowAction; it is listed here only so the shared param type matches.
+  action?: "run" | "save" | "run-saved" | "status";
   script?: string; args?: unknown; id?: string; name?: string;
 };
 export type ResolvedAction =

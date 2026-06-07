@@ -173,6 +173,11 @@ const JOURNAL_CONTROLLER_PREFIX = "workflows:journal:";
 // Stable owner key for the durable saved-workflow store. Fixed (not per-call) so
 // every `save`/`run-saved`/`list` shares one flow_runs row that survives restarts.
 const SAVED_OWNER_KEY = "agent:main:workflows-saved";
+// Stable owner key for DETACHED run flows, for the same reason: a later
+// `action:"status"` call (different toolCallId → different baseSessionKey) must be
+// able to find the flow created by the original detached run. Binding detached flows
+// to a fixed owner lets get(flowId) resolve them across calls + restarts.
+const DETACHED_OWNER_KEY = "agent:main:workflows-detached";
 
 export function createWorkflowTool() {
   return {
@@ -183,9 +188,13 @@ export function createWorkflowTool() {
     parameters: Type.Object({
       // Discriminated action (Plan #3 §3.6). Default "run".
       action: Type.Optional(
-        Type.Union([Type.Literal("run"), Type.Literal("save"), Type.Literal("run-saved")], {
-          description: "run (default) | save a script under id | run-saved by id.",
-        }),
+        Type.Union(
+          [Type.Literal("run"), Type.Literal("save"), Type.Literal("run-saved"), Type.Literal("status")],
+          {
+            description:
+              "run (default) | save a script under id | run-saved by id | status of a detached run by id (its flowId).",
+          },
+        ),
       ),
       script: Type.Optional(
         Type.String({
@@ -204,7 +213,13 @@ export function createWorkflowTool() {
       name: Type.Optional(Type.String({ description: "Human label for a saved workflow (save only)." })),
     }),
     execute: async (
-      params: { action?: "run" | "save" | "run-saved"; script?: string; args?: unknown; id?: string; name?: string },
+      params: {
+        action?: "run" | "save" | "run-saved" | "status";
+        script?: string;
+        args?: unknown;
+        id?: string;
+        name?: string;
+      },
       _config: unknown,
       ctx: ToolPluginExecutionContext,
     ): Promise<unknown> => {
@@ -253,6 +268,24 @@ export function createWorkflowTool() {
           return undefined;
         },
       };
+
+      // Detached run flows bind to the stable DETACHED_OWNER_KEY (see constant) so
+      // a later `status` poll can find them. This is the canonical PULL completion
+      // path for an externally-installed plugin: OpenClaw's own session-wake
+      // (scheduleSessionTurn) is hard-gated to bundled plugins and managedFlows.finish
+      // emits NO delivery, so the agent retrieves a detached result by polling here.
+      const detachedBoundFlows = managedFlows
+        ? managedFlows.bindSession({ sessionKey: DETACHED_OWNER_KEY })
+        : undefined;
+
+      // action:"status" → read a detached flow's persisted stateJson and return it.
+      if (params.action === "status") {
+        if (!params.id) throw new Error("status requires id (the detached flowId)");
+        const rec = detachedBoundFlows?.get(params.id);
+        if (!rec) return { status: "not_found", id: params.id };
+        const state = (rec.stateJson ?? {}) as { status?: string; result?: unknown; error?: unknown };
+        return { id: params.id, status: state.status ?? "running", result: state.result, error: state.error };
+      }
 
       // §3.6: resolve the action. save → return immediately; run/run-saved →
       // yield a script + args to feed the engine.
@@ -330,12 +363,15 @@ export function createWorkflowTool() {
           journal,
         });
 
-      // §3.4: detached path — return "started" immediately, deliver the final
-      // result via the flow's stateJson + a scheduled wakeup turn (§10.2/§10.3).
-      if (detached && managedFlows && scheduleSessionTurn && boundFlows) {
+      // §3.4: detached path — return "started" immediately + a flowId the caller
+      // polls with action:"status". The flow binds DETACHED_OWNER_KEY (stable) so the
+      // later poll resolves it. We still pass scheduleSessionTurn as a best-effort
+      // push, but it is a no-op for externally-installed plugins (bundled-gated), so
+      // PULL via status is the reliable completion path.
+      if (detached && managedFlows && scheduleSessionTurn && detachedBoundFlows) {
         progress(ctx, "starting detached workflow", "wf:detached");
         const started = await runDetached({
-          managedFlows: boundFlows,
+          managedFlows: detachedBoundFlows,
           scheduleSessionTurn,
           sessionKey: baseSessionKey,
           run: async () => (await run()) as JsonValue,
@@ -344,7 +380,9 @@ export function createWorkflowTool() {
           content: [
             {
               type: "text",
-              text: `Workflow started in the background (flow ${started.flowId}). Do not call again; wait for the completion turn.`,
+              text:
+                `Workflow started in the background (flow ${started.flowId}). ` +
+                `Poll for the result with action:"status", id:"${started.flowId}" — do not re-run.`,
             },
           ],
           details: { async: true, status: started.status, taskId: started.flowId, flowId: started.flowId },
