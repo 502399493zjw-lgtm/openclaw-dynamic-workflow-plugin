@@ -390,12 +390,16 @@ export function createWorkflowTool() {
           journal,
         });
 
-      // When a script yields no usable result BUT sub-agents failed, replace the bare
-      // `null` with the collected reasons. Applied to BOTH the inline return and the
-      // detached persisted result, so an action:"status" poll also gets the reason.
+      // Whenever ANY sub-agent failed, attach the reasons to the result — even when the
+      // script wrapped the failures in an object/array (e.g. `{a: null, b: null}`) so
+      // the top-level value isn't itself null. Otherwise the caller sees only the nested
+      // `null`s and is left guessing why (timeout / rate limit / rejected override).
+      // A fully-successful run (no spawnErrors) returns its raw value unchanged.
+      // Applied to BOTH the inline return and the detached persisted result, so an
+      // action:"status" poll also gets the reason.
       const finalize = (value: unknown): unknown =>
-        (value === null || value === undefined) && spawnErrors.length > 0
-          ? { result: null, error: `sub-agent(s) failed — ${spawnErrors.join("; ")}` }
+        spawnErrors.length > 0
+          ? { result: value ?? null, error: `sub-agent(s) failed — ${spawnErrors.join("; ")}` }
           : value;
 
       // §3.4: detached path — return "started" immediately + a flowId the caller
