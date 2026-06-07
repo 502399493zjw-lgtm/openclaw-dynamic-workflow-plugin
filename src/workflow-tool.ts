@@ -249,7 +249,8 @@ export function createWorkflowTool() {
       name: Type.Optional(Type.String({ description: "Human label for a saved workflow (save only)." })),
       description: Type.Optional(
         Type.String({
-          description: "One-line summary of what a saved workflow does (save only); surfaced by action='list'.",
+          description:
+            "Optional one-line summary of what the saved workflow does (save only); surfaced by action='list' so saved workflows are self-describing. Skip it if there is nothing useful to add.",
         }),
       ),
     }),
