@@ -7,7 +7,7 @@ import { spawnAwaitCollect, type SubagentRuntime } from "../skeleton/spawn-bridg
 
 export type WorkflowEvent =
   | { type: "phase"; name: string }
-  | { type: "agent:start"; phase: string; label: string; seq: number }
+  | { type: "agent:start"; phase: string; label: string; seq: number; prompt?: string; timeoutSec?: number }
   | { type: "agent:done"; phase: string; label: string; seq: number; status: string; error?: string }
   | { type: "log"; phase: string; message: string };
 
@@ -78,6 +78,10 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
     const mySeq = (seq += 1);
     const myPhase = phaseName;
     const label = agentOpts?.label ?? `${myPhase}#${mySeq}`;
+    // Observability: a single-line prompt preview + the effective first-response
+    // timeout (default 120s; see createGatewaySubagent) carried on agent:start.
+    const promptPreview = prompt.replace(/\s+/g, " ").trim().slice(0, 100);
+    const timeoutSec = agentOpts?.timeout ?? 120;
     // §3.5: a resume re-run keys cached agent results by `{callSite, prompt}`.
     const journalKey = { callSite: `${myPhase}#${mySeq}`, prompt };
     return scheduler.schedule(async () => {
@@ -91,12 +95,12 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
           cached = undefined;
         }
         if (cached !== undefined) {
-          emit({ type: "agent:start", phase: myPhase, label, seq: mySeq });
+          emit({ type: "agent:start", phase: myPhase, label, seq: mySeq, prompt: promptPreview, timeoutSec });
           emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: "cached" });
           return cached;
         }
       }
-      emit({ type: "agent:start", phase: myPhase, label, seq: mySeq });
+      emit({ type: "agent:start", phase: myPhase, label, seq: mySeq, prompt: promptPreview, timeoutSec });
       // api-findings §12: targeting `agentOpts.agent` runs the child AS that
       // pre-configured OpenClaw agent — it inherits that agent's model + tool policy
       // (resolved from the sessionKey `agent:<id>:` prefix), with no per-call override

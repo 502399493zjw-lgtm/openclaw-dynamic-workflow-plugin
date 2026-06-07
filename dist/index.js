@@ -4504,6 +4504,9 @@ __export(typebox_exports, {
 
 // src/workflow-tool.ts
 import { createHash as createHash2 } from "node:crypto";
+import { appendFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 // src/runtime/scheduler.ts
 function createScheduler(opts) {
@@ -4662,6 +4665,8 @@ async function runWorkflow(opts) {
     const mySeq = seq += 1;
     const myPhase = phaseName;
     const label = agentOpts?.label ?? `${myPhase}#${mySeq}`;
+    const promptPreview = prompt.replace(/\s+/g, " ").trim().slice(0, 100);
+    const timeoutSec = agentOpts?.timeout ?? 120;
     const journalKey = { callSite: `${myPhase}#${mySeq}`, prompt };
     return scheduler.schedule(async () => {
       if (opts.journal) {
@@ -4672,12 +4677,12 @@ async function runWorkflow(opts) {
           cached = void 0;
         }
         if (cached !== void 0) {
-          emit({ type: "agent:start", phase: myPhase, label, seq: mySeq });
+          emit({ type: "agent:start", phase: myPhase, label, seq: mySeq, prompt: promptPreview, timeoutSec });
           emit({ type: "agent:done", phase: myPhase, label, seq: mySeq, status: "cached" });
           return cached;
         }
       }
-      emit({ type: "agent:start", phase: myPhase, label, seq: mySeq });
+      emit({ type: "agent:start", phase: myPhase, label, seq: mySeq, prompt: promptPreview, timeoutSec });
       const baseKey = agentOpts?.agent ? opts.baseSessionKey.replace(/^agent:[^:]+:/, `agent:${agentOpts.agent}:`) : opts.baseSessionKey;
       const sessionKey = `${baseKey}:${myPhase}:${mySeq}`;
       const runOptions = {
@@ -8916,6 +8921,18 @@ function progress(ctx, text, id) {
     progress: { text, visibility: "channel", privacy: "public", id }
   });
 }
+function resolveTraceFile() {
+  const v = process.env.OPENCLAW_WORKFLOWS_TRACE;
+  if (!v || v === "0" || v === "false") return void 0;
+  return v.includes("/") ? v : join(process.env.OPENCLAW_HOME || homedir(), "workflow-trace.jsonl");
+}
+function traceWrite(file, rec) {
+  try {
+    appendFileSync(file, `${JSON.stringify(rec)}
+`);
+  } catch {
+  }
+}
 function getManagedFlows(api) {
   const tasks = api?.runtime?.tasks;
   const mf = tasks?.managedFlows;
@@ -9075,10 +9092,16 @@ function createWorkflowTool() {
         nodesInvoke: nodes?.invoke ?? (async () => void 0),
         nodeId: canvasNodeId
       });
+      const traceFile = resolveTraceFile();
+      const trace = (rec) => {
+        if (traceFile) traceWrite(traceFile, { ...rec, run: ctx.toolCallId, t: Date.now() });
+      };
+      trace({ type: "run:start" });
       let agentCount = 0;
       const spawnErrors = [];
       const onEvent = (e) => {
         canvas.onEvent(e);
+        if (e.type === "agent:start" || e.type === "agent:done") trace(e);
         if (e.type === "phase") {
           progress(ctx, `phase: ${e.name}`, `wf:phase:${e.name}`);
         } else if (e.type === "agent:start") {
@@ -9117,7 +9140,11 @@ function createWorkflowTool() {
           managedFlows: detachedBoundFlows,
           scheduleSessionTurn,
           sessionKey: baseSessionKey,
-          run: async () => finalize(await run())
+          run: async () => {
+            const v = finalize(await run());
+            trace({ type: "run:done" });
+            return v;
+          }
         });
         return {
           content: [
@@ -9132,6 +9159,7 @@ function createWorkflowTool() {
       const result = await run();
       await canvas.flush();
       progress(ctx, `done \u2014 ${agentCount} agent(s)`, "wf:done");
+      trace({ type: "run:done" });
       return finalize(result);
     }
   };

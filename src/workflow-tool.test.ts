@@ -76,6 +76,27 @@ describe("workflow tool", () => {
     expect(JSON.stringify(result)).toContain("simulated timeout");
   });
 
+  it("writes a structured trace (run/agent events with prompt+timeout) when OPENCLAW_WORKFLOWS_TRACE is set", async () => {
+    const { readFileSync, mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const file = join(mkdtempSync(join(tmpdir(), "wftrace-")), "trace.jsonl");
+    process.env.OPENCLAW_WORKFLOWS_TRACE = file;
+    try {
+      const tool = createWorkflowTool();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ctx = { api: { config: { gateway: { port: 18790, auth: { token: "t" } } } }, toolCallId: "tr-1" } as any;
+      await tool.execute({ script: `return await agent("hello there world", { label: "greet", timeout: 90 });` }, {}, ctx);
+      const recs = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      expect(recs.map((r) => r.type)).toEqual(expect.arrayContaining(["run:start", "agent:start", "agent:done", "run:done"]));
+      const start = recs.find((r) => r.type === "agent:start");
+      expect(start).toMatchObject({ label: "greet", timeoutSec: 90 });
+      expect(start.prompt).toContain("hello there");
+    } finally {
+      delete process.env.OPENCLAW_WORKFLOWS_TRACE;
+    }
+  });
+
   it("exposes the tool's static metadata", () => {
     const tool = createWorkflowTool();
     expect(tool.name).toBe("workflow");

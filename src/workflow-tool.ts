@@ -26,6 +26,9 @@
 import { Type } from "typebox";
 import type { ToolPluginExecutionContext } from "openclaw/plugin-sdk/tool-plugin";
 import { createHash } from "node:crypto";
+import { appendFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { runWorkflow, type WorkflowEvent, type ResumeJournal } from "./runtime/workflow-runtime.js";
 import { typeboxValidator } from "./runtime/typebox-validator.js";
 import { resolveWorkflowAction, type SavedStoreDeps } from "./runtime/saved-store.js";
@@ -42,6 +45,24 @@ function progress(ctx: ToolPluginExecutionContext, text: string, id: string): vo
     details: undefined,
     progress: { text, visibility: "channel", privacy: "public", id },
   });
+}
+
+// Optional structured trace for the live sub-agent monitor. OFF unless
+// OPENCLAW_WORKFLOWS_TRACE is set (truthy); the value may be a file path, else a
+// default `workflow-trace.jsonl` next to OPENCLAW_HOME. Append-only JSONL of
+// run:start / agent:start (with prompt preview + timeoutSec) / agent:done / run:done.
+// Best-effort observability — never throws, never changes workflow behavior.
+function resolveTraceFile(): string | undefined {
+  const v = process.env.OPENCLAW_WORKFLOWS_TRACE;
+  if (!v || v === "0" || v === "false") return undefined;
+  return v.includes("/") ? v : join(process.env.OPENCLAW_HOME || homedir(), "workflow-trace.jsonl");
+}
+function traceWrite(file: string, rec: Record<string, unknown>): void {
+  try {
+    appendFileSync(file, `${JSON.stringify(rec)}\n`);
+  } catch {
+    /* trace is best-effort — never fail the run on a write error */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,12 +359,21 @@ export function createWorkflowTool() {
         nodeId: canvasNodeId,
       });
 
+      // Structured trace (env-gated) for the live sub-agent monitor. Carries the
+      // run id (toolCallId) + a wall-clock timestamp on every record.
+      const traceFile = resolveTraceFile();
+      const trace = (rec: Record<string, unknown>): void => {
+        if (traceFile) traceWrite(traceFile, { ...rec, run: ctx.toolCallId, t: Date.now() });
+      };
+      trace({ type: "run:start" });
+
       let agentCount = 0;
       // Collect sub-agent failure reasons so a workflow that ends up `null` can
       // explain WHY (progress events alone don't reach the calling agent's view).
       const spawnErrors: string[] = [];
       const onEvent = (e: WorkflowEvent): void => {
         canvas.onEvent(e);
+        if (e.type === "agent:start" || e.type === "agent:done") trace(e);
         if (e.type === "phase") {
           progress(ctx, `phase: ${e.name}`, `wf:phase:${e.name}`);
         } else if (e.type === "agent:start") {
@@ -414,7 +444,11 @@ export function createWorkflowTool() {
           managedFlows: detachedBoundFlows,
           scheduleSessionTurn,
           sessionKey: baseSessionKey,
-          run: async () => finalize(await run()) as JsonValue,
+          run: async () => {
+            const v = finalize(await run()) as JsonValue;
+            trace({ type: "run:done" });
+            return v;
+          },
         });
         return {
           content: [
@@ -433,6 +467,7 @@ export function createWorkflowTool() {
       const result = await run();
       await canvas.flush();
       progress(ctx, `done — ${agentCount} agent(s)`, "wf:done");
+      trace({ type: "run:done" });
       return finalize(result);
     },
   };
