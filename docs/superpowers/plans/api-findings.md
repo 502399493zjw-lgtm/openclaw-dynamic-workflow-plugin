@@ -569,3 +569,185 @@ results come back as `{ payloadJSON }` or `{ payload }` needing a parse — see 
 
 There is no dedicated "get my paired node" helper — pairing is discovered by listing connected nodes and
 matching advertised caps/commands, exactly as §9.3 (canvas A2UI) assumed.
+
+## 11. Sub-agent config + save persistence (read-only verify vs openclaw HEAD d4b4a65 + installed 2026.6.1 d.ts)
+
+Verifies what each `agent()` call can set on a spawned sub-agent (model / persona / tools), how to
+confirm the model actually used, and whether saved workflows survive a gateway restart. Source read at
+`~/projects/openclaw` (HEAD d4b4a65, package version 2026.6.2). Each param/type re-confirmed
+byte-for-byte against the installed `node_modules/openclaw` 2026.6.1 d.ts. Source `file:line` cited
+first; d.ts second.
+
+### 11.1 Full `api.runtime.subagent.run` param set — exactly 9 fields, NO tools param
+
+`SubagentRunParams` — `src/plugins/runtime/types.ts:9-19`; identical in installed d.ts
+`node_modules/openclaw/dist/runtime-api-Cd4aqekH.d.ts:4795-4805`:
+
+```ts
+export type SubagentRunParams = {
+  sessionKey: string;
+  message: string;
+  provider?: string;
+  model?: string;
+  extraSystemPrompt?: string;
+  lane?: string;
+  lightContext?: boolean;
+  deliver?: boolean;
+  idempotencyKey?: string;
+};
+```
+
+Method type: `subagent.run: (params: SubagentRunParams) => Promise<SubagentRunResult>` where
+`SubagentRunResult = { runId: string }` (`types.ts:21-23`, `:81`). The full surface is
+`run | waitForRun | getSessionMessages | getSession (deprecated) | deleteSession` (`types.ts:80-89`).
+
+The real `run` impl (gateway side) is `createGatewaySubagentRuntime().run` in
+`src/gateway/server-plugins.ts:469-522`. It forwards to the gateway `"agent"` method passing ONLY:
+`sessionKey, message, deliver, [provider], [model], extraSystemPrompt, lane,
+bootstrapContextMode("lightweight" from lightContext===true), idempotencyKey` (server-plugins.ts:494-510).
+The gateway `agent` schema is `AgentParamsSchema` (`packages/gateway-protocol/src/schema/agent.ts:176-229`)
+with `additionalProperties: false` — and it has NO `tools`/`allowedTools`/`disallowedTools`/`toolPolicy`
+field anywhere. So there is no path to pass a tool allow/deny list through `subagent.run`.
+
+**Verdict: GREEN for the 9 listed params (no hidden extras). NOT-POSSIBLE for any per-call tools param.**
+Our `agent()` maps to: `sessionKey` = per-agent child key, `message` = the task prompt, `model`/`provider`
+= per-agent model override (gated, §11.3), `extraSystemPrompt` = per-agent persona (§11.2), `lane` =
+optional queue lane, `lightContext` = cheap-context toggle, `deliver: false` (default — keep child output
+internal), `idempotencyKey` = stable per-step key for retry-safety (the runtime auto-fills a UUID if
+omitted, server-plugins.ts:509).
+
+### 11.2 Persona / system prompt — `extraSystemPrompt` (GREEN, additive)
+
+`extraSystemPrompt` is the param. It is forwarded verbatim to the gateway `agent` method
+(`server-plugins.ts:502`) and accepted by `AgentParamsSchema.extraSystemPrompt` (`agent.ts:207`,
+`Type.Optional(Type.String())`). It is ADDITIVE: it is injected alongside the child agent's normal
+system prompt (the agent's configured base persona + bootstrap context), not a replacement — the child
+still builds its default system prompt and `extraSystemPrompt` is appended as extra instruction text
+(`src/agents/system-prompt.ts` composes the base; the gateway passes `extraSystemPrompt` through as an
+additional block). There is no "replace the whole system prompt" param.
+
+**Verdict: GREEN.** Our `agent({ persona })` sets `extraSystemPrompt: persona`. It layers on top of the
+agent's base prompt; it cannot blank out the default. If a workflow needs a fully isolated persona, point
+the child at a different `agentId`-scoped session — but note `subagent.run` has no `agentId` param, so the
+child always runs as the current agent identity with the persona appended.
+
+### 11.3 Model override gate — `plugins.entries.<id>.subagent.allowModelOverride` (GATED)
+
+Exact config path: `plugins.entries.<pluginId>.subagent.allowModelOverride: boolean` (+ optional
+`plugins.entries.<pluginId>.subagent.allowedModels: string[]`, where `"*"` = allow any).
+Type: `src/config/types.plugins.ts:19-27`. Zod: `src/config/zod-schema.ts:289-292`. The exact same key is
+used in production by memory-core (`extensions/memory-core/openclaw.plugin.json:27`), confirming the
+contract for a third-party plugin like workflows.
+
+Enforcement (the code that rejects model without the gate) is `createGatewaySubagentRuntime().run`:
+- `overrideRequested = Boolean(params.provider || params.model)` (server-plugins.ts:475).
+- For a plugin-runtime spawn (no request-scope client), it calls `authorizeFallbackModelOverride(...)`
+  (server-plugins.ts:174-224). If `policy?.allowModelOverride` is not `true` it THROWS:
+  `plugin "<id>" is not trusted for fallback provider/model override requests...` (server-plugins.ts:188-195).
+- If allowed but an `allowedModels` allowlist is set, the requested `provider/model` must be in it or it
+  throws `model override "<ref>" is not allowlisted...` (server-plugins.ts:217-223).
+- Crucially, when override is NOT allowed the spawn does NOT silently ignore the model — it REJECTS
+  (throws). And `model`/`provider` are only forwarded `...(allowOverride && params.model && {...})`
+  (server-plugins.ts:500-501), so without the gate they are stripped AND the call throws.
+- Policies are loaded from config by `setPluginSubagentOverridePolicies(cfg)` (server-plugins.ts:135-172),
+  process-global, refreshed on config load.
+
+**With the key true (or `allowedModels` matching):** `model`/`provider` pass through to the child run.
+**Without it:** any `subagent.run` that sets `model`/`provider` THROWS; a call with neither runs fine on
+the agent default model.
+
+**Verdict: GATED.** Our `agent({ model })` requires the operator to set
+`plugins.entries.workflows.subagent.allowModelOverride: true` (or an `allowedModels` allowlist). We should
+(a) document this as a setup prerequisite, (b) catch the thrown error and surface a clear "enable
+allowModelOverride" message rather than letting the workflow crash, and (c) when `model` is unset, omit it
+entirely so ungated installs still run on the default model.
+
+### 11.4 Per-call TOOLS restriction — NOT-POSSIBLE per call; CONFIG-ONLY scoping
+
+There is NO per-call tools param (see §11.1 — `AgentParamsSchema` is `additionalProperties:false` with no
+tools field). A single `subagent.run` cannot hand the child an allow/deny tool list.
+
+How sub-agent tools ARE scoped (config-only, per-agent, not per-spawn):
+- `tools.subagents.tools: { allow?: string[]; alsoAllow?: string[]; deny?: string[] }` —
+  `src/config/types.tools.ts:732-739` ("Sub-agent tool policy defaults (deny wins)").
+- Enforced by `resolveSubagentToolPolicy(cfg, depth)` (`src/agents/agent-tools.policy.ts:106-123`) and
+  `resolveSubagentToolPolicyForSession(...)` (`:126-...`). It also applies depth-based default denies
+  (deeper children lose `subagents`/`sessions_spawn`, agent-tools.policy.ts:67-118) governed by
+  `agents.defaults.subagents.maxSpawnDepth`. Deny always wins over allow.
+
+This policy is resolved from config at spawn time keyed on the agent/session — it is the SAME for every
+child the agent spawns. There is no documented per-`subagent.run` mechanism to vary it call-by-call.
+
+**Verdict: NOT-POSSIBLE per-call. CONFIG-ONLY via `tools.subagents.tools` (allow/alsoAllow/deny, deny
+wins) plus depth-based defaults.** Our `agent({ tools })` cannot be honored per call through the SDK.
+Realistic workarounds: (1) set a single workflow-wide `tools.subagents.tools` policy in config and
+document it; (2) if a workflow genuinely needs different toolsets per agent step, that is outside the
+injected `subagent.run` contract — it would require a per-agent-identity session with its own `tools`
+config, which `subagent.run` (no `agentId` param) cannot select. Treat per-agent tools as a non-goal for
+v1 and expose only the config-level knob.
+
+### 11.5 Verifying the model actually used (live test)
+
+The `run` result is only `{ runId }` and `waitForRun` is only `{ status, error? }`
+(`types.ts:21-33`) — neither echoes the model. The injected `getSessionMessages` returns only
+`{ messages }`: the `sessions.get` handler responds `{ messages }` with no session-level model field
+(`src/gateway/server-methods/sessions.ts:2491-2535`). So the runtime surface we hold does NOT directly
+return the per-child model.
+
+The canonical per-child model IS persisted and observable elsewhere:
+- The child's session row stores `model` + `modelProvider`; the gateway broadcasts them on the
+  `session.update` event (`src/gateway/server-methods/agent.ts:609-610`) and they are returned by the
+  `sessions.list` gateway method (schema model field `packages/gateway-protocol/src/schema/sessions.ts:231`).
+- The embedded agent runner logs the resolved model per run:
+  `provider=${provider}/${modelId} harness=...` (`src/agents/embedded-agent-runner/run.ts:3175`).
+
+**Most reliable signal for a live test: the gateway log line `provider=<provider>/<model>` emitted by the
+embedded agent runner for the child run** (run.ts:3175) — it shows the actually-resolved model after all
+gating/fallback, not just what we requested. Secondary programmatic signal: query the child session's
+`model`/`modelProvider` via the gateway `sessions.list` method (or observe the `session.update` event),
+which reflects the model the row was created/updated with. The injected `subagent` runtime alone is
+insufficient — confirm via gateway logs or a `sessions.list` call.
+
+**Verdict: GATED/indirect.** No per-call return value exposes the model; use the gateway runner log
+(`run.ts:3175`) as primary proof and `sessions.list` session metadata as the programmatic check.
+
+### 11.6 Save persistence across restart — durable SQLite, SURVIVES restart (GREEN)
+
+`api.runtime.tasks.managedFlows` `stateJson` (§10) is backed by the `flow_runs` table in the SHARED state
+SQLite DB on disk — durable across process restart.
+
+- Backing store: `src/tasks/task-flow-registry.store.sqlite.ts` — uses `node:sqlite` `DatabaseSync`
+  (line 2), writes via `insertInto("flow_runs")` with `state_json` column (lines 113, 161, 177-192).
+- Table DDL: `src/state/openclaw-state-schema.sql:1139-1163` — `CREATE TABLE IF NOT EXISTS flow_runs (...
+  owner_key TEXT NOT NULL, status TEXT NOT NULL, goal TEXT NOT NULL, state_json TEXT, wait_json TEXT,
+  revision, created_at, updated_at, ended_at ...)` with indexes on status/owner_key/updated_at. This is
+  the shared state schema (same file that defines core runtime tables).
+- File location: the shared state DB at `state/openclaw.sqlite`
+  (`src/state/openclaw-state-db.paths.ts:38-40` → `resolveOpenClawStateSqlitePath` →
+  `<stateRoot>/state/openclaw.sqlite`; confirmed by `src/state/openclaw-state-db.test.ts:41,65`). It is a
+  real file path, not `:memory:`.
+- The runtime taskflow accessors (`createManaged`/`get`/`list`/`findLatest`/`resolve`/`setWaiting`/
+  `resume`/`finish`, `src/plugins/runtime/runtime-taskflow.ts:124-...`) all delegate to these
+  SQLite-backed registry functions; reads use `getTaskFlowByIdForOwner` / `listTaskFlowsForOwner` keyed on
+  `owner_key`, so a flow saved before restart is found by `owner_key` after restart.
+
+**Verdict: GREEN.** save → restart gateway → run-saved finds it: the managed flow row (including
+`state_json`) is committed to the on-disk shared `state/openclaw.sqlite` `flow_runs` table and is read back
+by owner key after a fresh process start. Per OpenClaw storage policy (SQLite-only, no JSON sidecars) this
+is the canonical durable store. Our save action persists via `managedFlows.createManaged(... stateJson)`;
+run-saved re-resolves via `managedFlows.list()/get()/resolve()` keyed on the same owner session key.
+
+### 11.7 One-paragraph feasibility verdict
+
+**Per-agent model: GATED** — set via `subagent.run({ model, provider })` but ONLY if the operator enables
+`plugins.entries.workflows.subagent.allowModelOverride: true` (optionally constrained by `allowedModels`);
+without it the spawn throws, so `agent()` must omit `model` when unset and surface a clear setup error.
+**Per-agent persona: GREEN** — `subagent.run({ extraSystemPrompt })` injects a custom system-prompt block,
+additive on top of the agent's base prompt (cannot replace it). **Per-agent tools: NOT-POSSIBLE per call**
+— no per-spawn tools param exists; tools are CONFIG-ONLY via `tools.subagents.tools` (allow/alsoAllow/deny,
+deny wins) plus depth defaults, identical for every child, so treat per-agent tools as a non-goal and
+expose only the global config knob. **Model-used verification: indirect** — no API return echoes the
+model; rely on the gateway runner log `provider=<provider>/<model>` (run.ts:3175) and/or the child
+session's `model`/`modelProvider` via `sessions.list`/`session.update`. **Save-survives-restart: GREEN** —
+`managedFlows` `stateJson` is committed to the durable on-disk `flow_runs` table in `state/openclaw.sqlite`
+and is re-read by owner key after a gateway restart.

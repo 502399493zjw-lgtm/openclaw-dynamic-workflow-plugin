@@ -3,11 +3,16 @@ import { runWorkflow, type WorkflowEvent } from "./workflow-runtime.js";
 import { createResumeJournal } from "./resume-journal.js";
 import type { SubagentRuntime } from "../skeleton/spawn-bridge.js";
 
+// The full param shape `subagent.run` receives, captured for assertions.
+type RunParams = Parameters<SubagentRuntime["run"]>[0];
+
 // Fake subagent: echoes a per-prompt canned reply after an optional delay.
 function fakeSubagent(opts?: { reply?: (msg: string) => string; delayMs?: (msg: string) => number }): {
   rt: SubagentRuntime;
   peakConcurrency: () => number;
   spawnCount: () => number;
+  lastRunParams: () => RunParams | undefined;
+  runParams: () => RunParams[];
 } {
   let active = 0;
   let peak = 0;
@@ -15,8 +20,11 @@ function fakeSubagent(opts?: { reply?: (msg: string) => string; delayMs?: (msg: 
   const reply = opts?.reply ?? ((m) => `reply:${m}`);
   const delay = opts?.delayMs ?? (() => 0);
   const store = new Map<string, string>();
+  const captured: RunParams[] = [];
   const rt: SubagentRuntime = {
-    run: async ({ sessionKey, message }) => {
+    run: async (params) => {
+      captured.push(params);
+      const { sessionKey, message } = params;
       spawns += 1;
       active += 1; peak = Math.max(peak, active);
       await new Promise((r) => setTimeout(r, delay(message)));
@@ -29,7 +37,13 @@ function fakeSubagent(opts?: { reply?: (msg: string) => string; delayMs?: (msg: 
       messages: [{ role: "assistant", content: [{ type: "text", text: store.get(sessionKey) ?? "" }] }],
     }),
   };
-  return { rt, peakConcurrency: () => peak, spawnCount: () => spawns };
+  return {
+    rt,
+    peakConcurrency: () => peak,
+    spawnCount: () => spawns,
+    lastRunParams: () => captured[captured.length - 1],
+    runParams: () => captured,
+  };
 }
 
 type RunOpts = Parameters<typeof runWorkflow>[0];
@@ -43,6 +57,35 @@ describe("runWorkflow", () => {
   it("agent() spawns one sub-session and returns its collected text", async () => {
     const result = await runWorkflow(base({ script: `return await agent("hi");` }));
     expect(result).toBe("reply:hi");
+  });
+
+  it("agent() threads model/provider/system into subagent.run (system → extraSystemPrompt)", async () => {
+    const fake = fakeSubagent();
+    await runWorkflow(
+      base({
+        script: `return await agent("hi", { model: "m1", provider: "p1", system: "be terse" });`,
+        subagent: fake.rt,
+      }),
+    );
+    const params = fake.lastRunParams();
+    expect(params).toMatchObject({
+      message: "hi",
+      model: "m1",
+      provider: "p1",
+      extraSystemPrompt: "be terse",
+    });
+  });
+
+  it("agent() with no overrides omits model/provider/extraSystemPrompt (default behavior)", async () => {
+    const fake = fakeSubagent();
+    await runWorkflow(base({ script: `return await agent("hi");`, subagent: fake.rt }));
+    const params = fake.lastRunParams()!;
+    expect(params.model).toBeUndefined();
+    expect(params.provider).toBeUndefined();
+    expect(params.extraSystemPrompt).toBeUndefined();
+    expect("model" in params).toBe(false);
+    expect("provider" in params).toBe(false);
+    expect("extraSystemPrompt" in params).toBe(false);
   });
 
   it("parallel() runs all then resolves, order preserved (barrier)", async () => {

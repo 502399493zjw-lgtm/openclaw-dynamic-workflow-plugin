@@ -13,6 +13,7 @@ export type SubagentRuntime = {
     message: string;
     provider?: string;
     model?: string;
+    extraSystemPrompt?: string;
     deliver?: boolean;
   }) => Promise<{ runId: string }>;
   waitForRun: (params: {
@@ -28,6 +29,13 @@ export type SubagentRuntime = {
 export type SpawnAwaitCollectResult = {
   status: "ok" | "error" | "timeout";
   output: string;
+};
+
+/** Optional per-spawn overrides forwarded into `subagent.run` (omitted keys = default behavior). */
+export type SpawnRunOptions = {
+  model?: string;
+  provider?: string;
+  extraSystemPrompt?: string;
 };
 
 // `getSessionMessages` returns `messages: unknown[]`, so narrow each row
@@ -68,11 +76,18 @@ export async function spawnAwaitCollect(
   sessionKey: string,
   task: string,
   timeoutMs = 120_000,
+  runOptions?: SpawnRunOptions,
 ): Promise<SpawnAwaitCollectResult> {
   const { runId } = await subagent.run({
     sessionKey,
     message: task,
     deliver: false,
+    // Omit undefined keys so the default (no override) behavior is unchanged.
+    ...(runOptions?.model !== undefined ? { model: runOptions.model } : {}),
+    ...(runOptions?.provider !== undefined ? { provider: runOptions.provider } : {}),
+    ...(runOptions?.extraSystemPrompt !== undefined
+      ? { extraSystemPrompt: runOptions.extraSystemPrompt }
+      : {}),
   });
 
   const waited = await subagent.waitForRun({ runId, timeoutMs });

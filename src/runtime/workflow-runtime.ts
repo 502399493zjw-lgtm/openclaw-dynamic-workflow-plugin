@@ -52,7 +52,10 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
   let spawned = 0;
   const emit = (e: WorkflowEvent) => opts.onEvent?.(e);
 
-  const agent = async (prompt: string, agentOpts?: { schema?: unknown; label?: string }): Promise<unknown> => {
+  const agent = async (
+    prompt: string,
+    agentOpts?: { schema?: unknown; label?: string; model?: string; provider?: string; system?: string },
+  ): Promise<unknown> => {
     if (spawned >= totalCap) throw new Error(`TotalAgentCap reached (${totalCap})`);
     budget.assertCanSpend();
     spawned += 1;
@@ -79,9 +82,16 @@ export async function runWorkflow(opts: RunWorkflowOpts): Promise<unknown> {
       }
       emit({ type: "agent:start", phase: myPhase, label, seq: mySeq });
       const sessionKey = `${opts.baseSessionKey}:${myPhase}:${mySeq}`;
+      // Per-agent overrides: `system` → `extraSystemPrompt` (additive persona);
+      // model/provider gated by operator config at the gateway (not our concern).
+      const runOptions = {
+        model: agentOpts?.model,
+        provider: agentOpts?.provider,
+        extraSystemPrompt: agentOpts?.system,
+      };
       const runOnce = async (correction?: string) => {
         const message = correction ? `${prompt}\n\n${correction}` : prompt;
-        return spawnAwaitCollect(opts.subagent, sessionKey, message);
+        return spawnAwaitCollect(opts.subagent, sessionKey, message, undefined, runOptions);
       };
       // §3.5: record a successful result into the journal (best-effort).
       const record = async (value: unknown): Promise<void> => {
